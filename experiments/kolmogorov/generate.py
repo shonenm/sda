@@ -9,7 +9,7 @@ from typing import *
 
 from sda.mcs import KolmogorovFlow
 
-from utils import *
+from .utils import *
 
 
 @ensure(lambda i: (PATH / f'data/x_{i:06d}.npy').exists())
@@ -26,7 +26,7 @@ def simulate(i: int):
     np.save(PATH / f'data/x_{i:06d}.npy', x)
 
 
-@after(simulate)
+@after(simulate) # type: ignore
 @job(cpus=1, ram='1GB', time='00:15:00')
 def aggregate():
     files = sorted(PATH.glob('data/x_*.npy'))
@@ -43,21 +43,23 @@ def aggregate():
 
     for name, files in splits.items():
         with h5py.File(PATH / f'data/{name}.h5', mode='w') as f:
-            f.create_dataset(
+            dset = f.create_dataset(
                 'x',
                 shape=(len(files), 64, 2, 64, 64),
                 dtype=np.float32,
             )
 
             for i, x in enumerate(map(np.load, files)):
-                f['x'][i] = KolmogorovFlow.coarsen(torch.from_numpy(x), 4)
+                arr = KolmogorovFlow.coarsen(torch.from_numpy(x), 4) \
+                                    .detach().cpu().numpy().astype(np.float32)
+                dset[i, ...] = arr
 
 
 if __name__ == '__main__':
     (PATH / 'data').mkdir(parents=True, exist_ok=True)
 
     schedule(
-        aggregate,
+        aggregate, # type: ignore
         name='Data generation',
         backend='slurm',
         prune=True,

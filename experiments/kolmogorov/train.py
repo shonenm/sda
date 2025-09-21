@@ -9,7 +9,7 @@ from sda.mcs import *
 from sda.score import *
 from sda.utils import *
 
-from utils import *
+from .utils import *
 
 
 CONFIG = {
@@ -66,7 +66,7 @@ def train(i: int):
     # Save
     torch.save(
         score.state_dict(),
-        runpath / f'state.pth',
+        runpath / 'state.pth',
     )
 
     # Evaluation
