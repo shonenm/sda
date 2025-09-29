@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sda"
+version = "0.0.1"
+description = "Submodule package for SDA experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "torch",
+  "h5py",
+  "dawgz",
+]
+
+[tool.setuptools]
+packages = ["sda"]  # sda/ 配下に __init__.py がある前提
