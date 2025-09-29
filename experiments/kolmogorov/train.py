@@ -41,7 +41,8 @@ def train(i: int):
     # Network
     window = CONFIG['window']
     score = make_score(**CONFIG)
-    sde = VPSDE(score.kernel, shape=(window * 2, 64, 64)).cuda()
+    shape = torch.Size((window * 2, 64, 64))
+    sde = VPSDE(score.kernel, shape=shape).cuda()
 
     # Data
     trainset = TrajectoryDataset(PATH / 'data/train.h5', window=window, flatten=True)
@@ -70,7 +71,7 @@ def train(i: int):
     )
 
     # Evaluation
-    x = sde.sample((2,), steps=64).cpu()
+    x = sde.sample(torch.Size([2]), steps=64).cpu()
     x = x.unflatten(1, (-1, 2))
     w = KolmogorovFlow.vorticity(x)
 
@@ -80,7 +81,7 @@ def train(i: int):
 
 if __name__ == '__main__':
     schedule(
-        train,
+        train, # type: ignore
         name='Training',
         backend='slurm',
         export='ALL',
