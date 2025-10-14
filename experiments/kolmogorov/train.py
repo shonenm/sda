@@ -32,7 +32,21 @@ CONFIG = {
 
 @job(array=3, cpus=4, gpus=1, ram='16GB', time='24:00:00')
 def train(i: int):
-    run = wandb.init(project='sda-kolmogorov', config=CONFIG)
+    # Create descriptive run name
+    lr = CONFIG['learning_rate']
+    bs = CONFIG['batch_size']
+    wd = CONFIG['weight_decay']
+    window = CONFIG['window']
+    run_name = f"kolmogorov_w{window}_lr{lr:.0e}_bs{bs}_wd{wd:.0e}_seed{i}"
+
+    run = wandb.init(
+        project='sda-kolmogorov',
+        name=run_name,
+        group='kolmogorov_flow_baseline',
+        tags=['kolmogorov', 'periodic-bc', f'seed{i}', f'lr{lr:.0e}', f'window{window}'],
+        notes=f'Kolmogorov flow with forcing, run {i+1}/3. Training with window={window}, lr={lr:.0e}',
+        config=CONFIG,
+    )
     runpath = PATH / f'runs/{run.name}_{run.id}'
     runpath.mkdir(parents=True, exist_ok=True)
 
