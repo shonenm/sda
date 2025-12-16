@@ -5,64 +5,82 @@ IBPM円柱周り流れの時系列データに対する拡散モデルの学習�
 
 Immersed Boundary Projection Method (IBPM)で計算されたRe=100の円柱周り流れ
 （カルマン渦列）のデータから2D速度場の時系列を生成するモデルを学習
+
+- 幾何条件（円柱マスク + 流入プロファイル）を条件付け
+- VPSDE.loss()による標準的なデノイジングスコアマッチング
+- reflect padding（非周期境界条件）
 """
 
+import torch
 import wandb
 
 from dawgz import job, schedule
-from typing import *
+from pathlib import Path
+from torch.utils.data import DataLoader
+from tqdm import trange
 
-from sda.mcs import *
-from sda.score import *
-from sda.utils import *
+from sda.data import IBPMDataset
+from sda.score import VPSDE
+from sda.utils import save_config
 
-from .utils import *
+# Import from experiments.ibpm.utils with absolute path
+from experiments.ibpm.utils import make_score, PATH
 
+
+# データパス設定
+import os
+if 'SCRATCH' in os.environ:
+    DATA_PATH = Path(os.environ['SCRATCH']) / 'sda/ibpm'
+else:
+    DATA_PATH = Path('/workspace/data/ibpm_h5_wide_perturbed')
 
 # 学習設定
-# IBPM円柱流れ（64×64グリッド）の時系列を処理
+# IBPM円柱流れ（199×399グリッド）の時系列を処理
 CONFIG = {
     # アーキテクチャ
     'window': 5,                          # 時間窓のサイズ（前後2ステップ+現在）
+    'cond_channels': 2,                   # 条件チャネル数（mask + inflow）
     'embedding': 64,                      # 時刻埋め込みの次元数
     'hidden_channels': (96, 192, 384),    # U-Netの各深さでのチャネル数（3段階）
     'hidden_blocks': (3, 3, 3),           # 各深さでの残差ブロック数
     'kernel_size': 3,                     # 畳み込みカーネルのサイズ
     'activation': 'SiLU',                 # 活性化関数
     # 学習設定
-    'epochs': 1024,                       # エポック数（Kolmogorovより短い）
-    'batch_size': 32,                     # バッチサイズ
+    'epochs': 100,                        # エポック数
+    'batch_size': 4,                      # バッチサイズ（199×399解像度のためメモリ節約）
     'optimizer': 'AdamW',                 # オプティマイザ
-    'learning_rate': 2e-4,                # 学習率
+    'learning_rate': 1e-4,                # 学習率
     'weight_decay': 1e-3,                 # 重み減衰
     'scheduler': 'linear',                # 学習率スケジューラ
 }
 
 
-@job(array=3, cpus=4, gpus=1, ram='16GB', time='24:00:00')
+@job(array=1, cpus=4, gpus=1, ram='16GB', time='4:00:00')
 def train(i: int):
     """IBPM円柱流れモデルの学習ジョブ
 
     Re=100の円柱周り流れ（カルマン渦列）のシミュレーションデータから
-    時系列生成モデルを学習。円柱は境界条件として扱い、周期的な渦放出をモデル化
+    時系列生成モデルを学習。幾何条件（円柱マスク＋流入）を明示的に条件付け
 
     Args:
-        i: ジョブ配列のインデックス（0-2、3回の独立実行）
+        i: ジョブ配列のインデックス
     """
-    # WandB実行名を生成（ハイパーパラメータを含む）
+    import math
+
+    # WandB実行名を生成
     lr = CONFIG['learning_rate']
     bs = CONFIG['batch_size']
     wd = CONFIG['weight_decay']
     window = CONFIG['window']
-    run_name = f"ibpm_w{window}_lr{lr:.0e}_bs{bs}_wd{wd:.0e}_seed{i}"
+    run_name = f"ibpm_vpsde_w{window}_lr{lr:.0e}_bs{bs}_wd{wd:.0e}_seed{i}"
 
-    # WandBで実験管理（タグとメタデータ付き）
+    # WandBで実験管理
     run = wandb.init(
         project='sda-ibpm',
         name=run_name,
-        group='ibpm_cylinder_flow',
-        tags=['ibpm', 'cylinder', f'seed{i}', f'lr{lr:.0e}', f'window{window}'],
-        notes=f'IBPM cylinder flow (Re=100), run {i+1}/3. Training with window={window}, lr={lr:.0e}',
+        group='ibpm_cylinder_vpsde',
+        tags=['ibpm', 'cylinder', 'vpsde', f'seed{i}', f'lr{lr:.0e}'],
+        notes=f'IBPM with VPSDE (Kolmogorov-style), run {i+1}',
         config=CONFIG,
     )
     runpath = PATH / f'runs/{run.name}_{run.id}'
@@ -70,47 +88,127 @@ def train(i: int):
 
     save_config(CONFIG, runpath)
 
-    # ネットワークの構築
-    window = CONFIG['window']
-    score = make_score(**CONFIG)  # MCScoreNet + LocalScoreUNet
-    # window * 2チャネル（5時刻×2成分=10チャネル）、64×64の2D画像
-    shape = torch.Size((window * 2, 64, 64))
-    sde = VPSDE(score.kernel, shape=shape).cuda()
+    # データセットの準備
+    train_dataset = IBPMDataset(
+        DATA_PATH / 'train.h5',
+        time_window=window,
+        use_sdf=False,  # 2チャネル（mask + inflow）
+    )
+    valid_dataset = IBPMDataset(
+        DATA_PATH / 'valid.h5',
+        time_window=window,
+        use_sdf=False,
+    )
 
-    # データの準備（IBPMシミュレーション結果、flatten=Trueで時間×チャネルをフラット化）
-    trainset = TrajectoryDataset(Path("/workspace/data/ibpm_h5/train.h5"), window=window, flatten=True)
-    validset = TrajectoryDataset(Path("/workspace/data/ibpm_h5/valid.h5"), window=window, flatten=True)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=bs,
+        shuffle=True,
+        num_workers=2,
+        pin_memory=True,
+    )
+    valid_loader = DataLoader(
+        valid_dataset,
+        batch_size=bs,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True,
+    )
+
+    # データ形状を取得（最初のバッチから）
+    sample_x, sample_cond, _ = train_dataset[0]
+    T, C, H, W = sample_x.shape  # (window, 2, H, W)
+
+    # ネットワークの構築
+    score_net = make_score(**CONFIG).cuda()
+
+    # VPSDEを構築（Kolmogorov流と同様）
+    # 入力形状: (window * 2, H, W) - 時間とチャネルをフラット化
+    shape = torch.Size((window * C, H, W))
+    sde = VPSDE(score_net.kernel, shape=shape).cuda()
+
+    # Optimizer
+    optimizer = torch.optim.AdamW(
+        sde.parameters(),
+        lr=lr,
+        weight_decay=wd,
+    )
+
+    # スケジューラ（線形減衰）
+    epochs = CONFIG['epochs']
+    if CONFIG['scheduler'] == 'linear':
+        lr_lambda = lambda t: 1 - (t / epochs)
+    elif CONFIG['scheduler'] == 'cosine':
+        lr_lambda = lambda t: (1 + math.cos(math.pi * t / epochs)) / 2
+    else:
+        lr_lambda = lambda t: 1.0
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
     # 学習ループ
-    generator = loop(
-        sde,
-        trainset,
-        validset,
-        device='cuda',
-        **CONFIG,
-    )
+    for epoch in (bar := trange(epochs, ncols=88)):
+        losses_train = []
+        losses_valid = []
 
-    # エポックごとにログを記録
-    for loss_train, loss_valid, lr in generator:
+        # 訓練フェーズ
+        sde.train()
+        for batch in train_loader:
+            x, cond, mask = batch  # x: (B, T, C, H, W), cond: (B, C_cond, H, W)
+
+            # GPUに転送し、時間とチャネルをフラット化
+            x = x.cuda().flatten(1, 2)  # (B, T*C, H, W)
+            cond = cond.cuda()  # (B, C_cond, H, W)
+
+            # VPSDE.loss()を使用（条件cを渡す）
+            loss = sde.loss(x, c=cond)
+            loss.backward()
+
+            optimizer.step()
+            optimizer.zero_grad()
+
+            losses_train.append(loss.detach())
+
+        # 検証フェーズ
+        sde.eval()
+        with torch.no_grad():
+            for batch in valid_loader:
+                x, cond, mask = batch
+                x = x.cuda().flatten(1, 2)
+                cond = cond.cuda()
+                losses_valid.append(sde.loss(x, c=cond))
+
+        # 統計情報
+        loss_train = torch.stack(losses_train).mean().item()
+        loss_valid = torch.stack(losses_valid).mean().item()
+        current_lr = optimizer.param_groups[0]['lr']
+
+        # WandBにログ
         run.log({
+            'epoch': epoch + 1,
             'loss_train': loss_train,
             'loss_valid': loss_valid,
-            'lr': lr,
+            'lr': current_lr,
         })
 
-    # モデルの保存
+        # プログレスバーに表示
+        bar.set_postfix(lt=loss_train, lv=loss_valid, lr=current_lr)
+
+        # スケジューラ更新
+        scheduler.step()
+
+        # モデル保存（50エポックごと）
+        if (epoch + 1) % 50 == 0:
+            torch.save(
+                score_net.state_dict(),
+                runpath / f'state_epoch{epoch+1}.pth',
+            )
+
+    # 最終モデルの保存
     torch.save(
-        score.state_dict(),
-        runpath / 'state.pth',
+        score_net.state_dict(),
+        runpath / 'state_final.pth',
     )
 
-    # 評価：サンプル生成と可視化
-    x = sde.sample(torch.Size([2]), steps=64).cpu()  # 2つのサンプルを生成
-    x = x.unflatten(1, (-1, 2))  # (2, 10, 64, 64) -> (2, 5, 2, 64, 64)
-    w = KolmogorovFlow.vorticity(x)  # 速度場から渦度を計算（カルマン渦列の可視化）
-
-    # 渦度場の画像をWandBにログ
-    run.log({'samples': wandb.Image(draw(w))})
     run.finish()
 
 
@@ -118,8 +216,9 @@ if __name__ == '__main__':
     # SLURMバックエンドでジョブをスケジュール（3回の独立実行）
     schedule(
         train, # type: ignore
-        name='Training',
+        name='IBPM_Training',
         backend='slurm',
-        export='ALL',                     # すべての環境変数をエクスポート
-        env=['export WANDB_SILENT=true'], # WandBの出力を抑制
+        export='ALL',
+        interpreter='/workspace/sda/.venv/bin/python',  # 共有venv内のPythonを使用
+        env=['export WANDB_SILENT=true'],
     )

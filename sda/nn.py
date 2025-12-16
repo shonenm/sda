@@ -239,7 +239,12 @@ class UNet(nn.Module):
 
             if memory:
                 # スキップ接続：エンコーダの対応する層からの特徴を加算
-                x = tail(x) + memory.pop()
+                skip = memory.pop()
+                x_up = tail(x)
+                # サイズ不一致を補間で解決（奇数解像度対応）
+                if x_up.shape[-2:] != skip.shape[-2:]:
+                    x_up = nn.functional.interpolate(x_up, size=skip.shape[-2:], mode='nearest')
+                x = x_up + skip
             else:
                 x = tail(x)
 

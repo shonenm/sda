@@ -1,0 +1,64 @@
+# IBPM Training Configuration
+# 円柱周り流れ（Re=100）のスコアベース生成モデル学習設定
+
+model:
+  padding_mode: reflect          # 非周期境界条件
+  cond_channels: 2               # 条件チャネル数（mask + inflow）
+  use_sdf: false                 # SDFを条件に含めるか（true: 3ch, false: 2ch）
+
+architecture:
+  window: 5                      # 時間窓のサイズ
+  embedding: 64                  # 時刻埋め込みの次元数
+  hidden_channels: [96, 192, 384]  # U-Netの各深さでのチャネル数
+  hidden_blocks: [3, 3, 3]       # 各深さでの残差ブロック数
+  kernel_size: 3                 # 畳み込みカーネルのサイズ
+  activation: SiLU               # 活性化関数
+
+data:
+  train_path: /workspace/data/ibpm_h5/train.h5
+  test_path: /workspace/data/ibpm_h5/test.h5
+  time_window: 8                 # データローダーの時間窓
+  cylinder_params:
+    center: [32.0, 37.0]         # 円柱中心座標
+    radius: 7.5                  # 円柱半径
+
+training:
+  epochs: 2048                   # エポック数
+  batch_size: 16                 # バッチサイズ（物理損失あるため小さめ）
+  learning_rate: 1.0e-4          # 学習率
+  weight_decay: 1.0e-3           # 重み減衰
+  optimizer: AdamW               # オプティマイザ
+  scheduler: linear              # 学習率スケジューラ
+  grad_clip_norm: 1.0            # Gradient clipping
+
+loss:
+  weights:
+    score: 1.0                   # スコアマッチング損失
+    mask: 1.0                    # マスク付きMSE
+    wall: 0.1                    # 壁面境界罰則
+    div: 0.05                    # 発散罰則
+    out: 0.05                    # 流出境界勾配罰則
+
+sde:
+  beta_min: 0.1                  # VP-SDEの最小β
+  beta_max: 20.0                 # VP-SDEの最大β
+  T: 1.0                         # 拡散時間
+
+inference:
+  guidance:
+    eta_wall: 1.0e-4             # 壁面ガイダンス係数
+    eta_div: 1.0e-4              # 発散ガイダンス係数
+    max_grad_norm: 10.0          # ガイダンス勾配のクリッピング
+  steps: 256                     # サンプリングステップ数
+  corrections: 2                 # PC sampler の補正数
+  tau: 0.5                       # ステップサイズ
+
+evaluation:
+  boundary_crop: 4               # 境界4pxを除外するオプション
+  metrics_both: true             # full + interior の2系統評価
+
+logging:
+  wandb_project: sda-ibpm
+  wandb_group: ibpm_cylinder_re100
+  log_interval: 10               # 学習ログの記録間隔（バッチ単位）
+  save_interval: 100             # モデル保存間隔（エポック単位）

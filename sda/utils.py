@@ -3,9 +3,14 @@ r"""Helpers"""
 import h5py
 import json
 import math
-import ot
 import random
 import torch
+
+# Optional import for Optimal Transport (used for W2 distance computation)
+try:
+    import ot
+except ImportError:
+    ot = None
 
 from pathlib import Path
 from torch import Tensor

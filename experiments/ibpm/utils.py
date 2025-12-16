@@ -14,9 +14,14 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageOps
 from typing import *
 
-from sda.mcs import *
 from sda.score import *
 from sda.utils import *
+
+try:
+    from sda.mcs import KolmogorovFlow
+except ImportError:
+    # KolmogorovFlow requires jax, but make_chain() is not used in training
+    KolmogorovFlow = None
 
 
 # データとモデルの保存先パスの設定
@@ -30,64 +35,64 @@ else:
 PATH.mkdir(parents=True, exist_ok=True)
 
 
-def make_chain() -> MarkovChain:
+def make_chain() -> 'MarkovChain':
     """Kolmogorov流のマルコフ連鎖を作成
 
     注: IBPM実験でもKolmogorovFlowクラスを使用しているが、
         実際のデータは別途IBPMシミュレーション結果を使用
+        学習スクリプトではこの関数は使用されない
 
     Returns:
         KolmogorovFlow: 256×256グリッド、時間刻み0.2
     """
+    if KolmogorovFlow is None:
+        raise ImportError("KolmogorovFlow requires jax, which is not available")
     return KolmogorovFlow(size=256, dt=0.2)
 
 
 class LocalScoreUNet(ScoreUNet):
-    r"""強制項チャネルを持つスコアU-Net
+    r"""幾何条件チャネルを持つスコアU-Net（IBPM専用）
 
-    Kolmogorov流の強制項 sin(4x) を条件付けチャネルとして持つU-Net
-    IBPM実験でも同じアーキテクチャを使用（円柱は境界条件として扱う）
+    IBPM円柱流れ用の条件付きU-Net
+    - 円柱マスク + 流入プロファイル（+ オプショナルSDF）を条件として使用
+    - reflect padding（非周期境界条件）
 
     Args:
         channels: 入力チャネル数（時間窓×速度成分数）
-        size: 空間グリッドサイズ（デフォルト: 64）
+        cond_channels: 条件チャネル数（2 or 3）
         **kwargs: ScoreUNetの追加パラメータ
     """
 
     def __init__(
         self,
         channels: int,
-        size: int = 64,
+        cond_channels: int = 2,  # mask + inflow (+ optional sdf)
         **kwargs,
     ):
-        # 条件付けチャネル数を1に設定（強制項用）
-        super().__init__(channels, 1, **kwargs)
+        # 条件付けチャネル数を指定
+        super().__init__(channels, cond_channels, **kwargs)
 
-        # 強制項 sin(4x) の作成（物理空間のセルセンターで評価）
-        domain = 2 * torch.pi / size * (torch.arange(size) + 1 / 2)
-        forcing = torch.sin(4 * domain).expand(1, size, size).clone()
-
-        # バッファとして登録（学習パラメータではないが、デバイス移動時に自動で移動される）
-        self.register_buffer('forcing', forcing)
-
-    def forward(self, x: Tensor, t: Tensor, c: Tensor = None) -> Tensor:
-        """順伝播：常に強制項を条件として使用
+    def forward(self, x: Tensor, t: Tensor, c: Tensor) -> Tensor:
+        """順伝播：幾何条件を使用
 
         Args:
-            x: 入力速度場 (batch, channels, H, W)
+            x: 入力速度場 (B, L-2*order, (2*order+1)*C, H, W) after unfold or (batch, channels, H, W)
             t: 拡散時刻 (batch,)
-            c: 条件（使用されない、常にself.forcingを使用）
+            c: 幾何条件 (batch, cond_channels, H, W) - batch dimension included
 
         Returns:
-            スコア推定値 (batch, channels, H, W)
+            スコア推定値 (same shape as x)
         """
-        return super().forward(x, t, self.forcing)
+        # c already has batch dimension from MCScoreNet
+        # No need to expand manually - parent class handles broadcasting
+        return super().forward(x, t, c)
 
 
 def make_score(
-    window: int = 3,
+    window: int = 5,
+    cond_channels: int = 2,
     embedding: int = 64,
-    hidden_channels: Sequence[int] = (64, 128, 256),
+    hidden_channels: Sequence[int] = (96, 192, 384),
     hidden_blocks: Sequence[int] = (3, 3, 3),
     kernel_size: int = 3,
     activation: str = 'SiLU',
@@ -96,12 +101,13 @@ def make_score(
     """IBPM用のスコアネットワークを構築
 
     MCScoreNet（マルコフ連鎖スコアネット）+ LocalScoreUNetの組み合わせ
-    Kolmogorov流と同じアーキテクチャで円柱周りの流れをモデル化
+    IBPM専用：reflect padding、幾何条件チャネル対応
 
     Args:
         window: 時間窓のサイズ（奇数、中心時刻±order）
+        cond_channels: 条件チャネル数（2=mask+inflow, 3=mask+inflow+sdf）
         embedding: 時刻埋め込みの次元数
-        hidden_channels: U-Netの各深さでのチャネル数（例: (64, 128, 256)は3段階）
+        hidden_channels: U-Netの各深さでのチャネル数
         hidden_blocks: 各深さでの残差ブロック数
         kernel_size: 畳み込みカーネルのサイズ
         activation: 活性化関数名（'SiLU', 'ReLU'など）
@@ -113,16 +119,17 @@ def make_score(
     # MCScoreNet: 2成分の速度場、order=window//2（前後何ステップ見るか）
     score = MCScoreNet(2, order=window // 2)
 
-    # カーネルとして強制項付きU-Netを使用
+    # カーネルとして幾何条件付きU-Netを使用（IBPM専用）
     score.kernel = LocalScoreUNet(
         channels=window * 2,           # window時刻 × 2成分の速度場
+        cond_channels=cond_channels,   # 幾何条件チャネル
         embedding=embedding,
         hidden_channels=hidden_channels,
         hidden_blocks=hidden_blocks,
         kernel_size=kernel_size,
         activation=ACTIVATIONS[activation],
         spatial=2,                     # 2次元空間データ
-        padding_mode='circular',       # 周期境界条件（円柱は境界で処理）
+        padding_mode='reflect',        # 非周期境界条件（IBPM用）
     )
 
     return score

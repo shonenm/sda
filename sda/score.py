@@ -188,13 +188,37 @@ class MCScoreNet(nn.Module):
     def forward(
         self,
         x: Tensor,  # (B, L, C, H, W) 時系列データ
-        t: Tensor,  # () スカラー時刻
-        c: Tensor = None,  # (C', H, W) 文脈
+        t: Tensor,  # (B,) or scalar バッチごとの時刻
+        c: Tensor = None,  # (B, C', H, W) 文脈
     ) -> Tensor:
+        B, L = x.shape[:2]
+
+        # tがスカラーの場合はバッチサイズに展開
+        if t.dim() == 0:
+            t = t.expand(B)
+
         # 時間窓を展開：各時刻について前後order個の状態を連結
-        x = self.unfold(x, self.order)
+        x = self.unfold(x, self.order)  # (B, L-2*order, (2*order+1)*C, H, W)
+        L_out = x.shape[1]
+
+        # バッチとタイムステップをフラット化
+        x_flat = x.flatten(0, 1)  # (B*(L-2*order), (2*order+1)*C, H, W)
+
+        # tを各タイムステップに展開
+        t_flat = t.unsqueeze(1).expand(B, L_out).flatten()  # (B*(L-2*order),)
+
+        # cを各タイムステップに展開（cがある場合）
+        if c is not None:
+            c_flat = c.unsqueeze(1).expand(B, L_out, *c.shape[1:]).flatten(0, 1)  # (B*(L-2*order), C', H, W)
+        else:
+            c_flat = None
+
         # スコア関数を適用
-        s = self.kernel(x, t, c)
+        s_flat = self.kernel(x_flat, t_flat, c_flat)  # (B*(L-2*order), (2*order+1)*C, H, W)
+
+        # 元の形状に戻す
+        s = s_flat.unflatten(0, (B, L_out))  # (B, L-2*order, (2*order+1)*C, H, W)
+
         # 元の時系列形状に戻す
         s = self.fold(s, self.order)
 
