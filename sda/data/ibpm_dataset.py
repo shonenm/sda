@@ -204,6 +204,7 @@ class IBPMDataset(Dataset):
         time_window: 時間窓のサイズ
         use_sdf: SDFを条件に含めるか（Trueの場合、C_cond=3）
         cylinder_params: 円柱パラメータ {'center': (cx, cy), 'radius': r}
+        normalize: データを正規化するか（デフォルト: True）
     """
 
     def __init__(
@@ -212,12 +213,18 @@ class IBPMDataset(Dataset):
         time_window: int = 8,
         use_sdf: bool = False,
         cylinder_params: Optional[Dict[str, Any]] = None,
+        normalize: bool = True,
     ):
         super().__init__()
 
         self.h5_path = Path(h5_path)
         self.time_window = time_window
         self.use_sdf = use_sdf
+        self.normalize = normalize
+
+        # 正規化を行う場合はNormalizerを初期化
+        if normalize:
+            self.normalizer = IBPMNormalizer()
 
         # HDF5ファイルを開く
         self.h5_file = h5py.File(self.h5_path, 'r')
@@ -289,6 +296,10 @@ class IBPMDataset(Dataset):
         # 時間窓を切り出し: (T, C, H, W)
         x = self.data[time_idx:time_idx + self.time_window, sample_idx, :, :, :]
         x = torch.from_numpy(np.array(x)).float()
+
+        # 正規化（mean=0, std=1に）
+        if self.normalize:
+            x = self.normalizer.normalize(x)
 
         # 条件チャネルを生成
         if self.use_sdf:

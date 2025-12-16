@@ -6,6 +6,8 @@ IBPM（Immersed Boundary Projection Method）流体シミュレーション実�
 - 円柱周りの流れ（Re=100）の2D速度場を扱う
 """
 
+import h5py
+import matplotlib.pyplot as plt
 import os
 import seaborn
 
@@ -14,6 +16,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageOps
 from typing import *
 
+from sda.data.ibpm_dataset import IBPMNormalizer
 from sda.score import *
 from sda.utils import *
 
@@ -347,3 +350,255 @@ def save_gif(
         duration=int(1000 * dt), # フレーム間隔（ミリ秒）
         loop=0,                  # 無限ループ
     )
+
+
+# ===========================================================================
+# 追加のユーティリティ関数（evaluate.py 用）
+# ===========================================================================
+
+def compute_vorticity(x: Tensor) -> Tensor:
+    """速度場から渦度を計算
+
+    Args:
+        x: (..., 2, H, W) - 速度場 [u, v]
+
+    Returns:
+        vorticity: (..., H, W) - 渦度 (dv/dx - du/dy)
+    """
+    u = x[..., 0, :, :]
+    v = x[..., 1, :, :]
+    dvdx = torch.gradient(v, dim=-1)[0]
+    dudy = torch.gradient(u, dim=-2)[0]
+    return dvdx - dudy
+
+
+def plot_vorticity(
+    w: Tensor,
+    title: str = 'Vorticity',
+    vmin: float = None,
+    vmax: float = None,
+    use_percentile: bool = False,
+    percentile_range: Tuple[float, float] = (2, 98),
+    figsize: Tuple[int, int] = (15, 3),
+    save_path: Path = None,
+) -> plt.Figure:
+    """渦度場をmatplotlibでプロット
+
+    Args:
+        w: (N, H, W) or (H, W) 渦度場
+        title: プロットタイトル
+        vmin, vmax: カラーバーの範囲（Noneなら自動）
+        use_percentile: Trueならパーセンタイルで外れ値を無視
+        percentile_range: パーセンタイル範囲 (low, high)
+        figsize: 図のサイズ
+        save_path: 保存先パス（Noneなら保存しない）
+
+    Returns:
+        matplotlib Figure
+    """
+    if w.ndim == 2:
+        w = w[None, ...]
+
+    w_np = w.numpy() if isinstance(w, torch.Tensor) else w
+
+    if vmin is None or vmax is None:
+        if use_percentile:
+            low, high = np.percentile(w_np, percentile_range)
+            wmax = max(abs(low), abs(high))
+        else:
+            wmax = float(max(abs(w_np.min()), abs(w_np.max())))
+        vmin, vmax = -wmax, wmax
+
+    n_samples = w.shape[0]
+    fig, axes = plt.subplots(1, n_samples, figsize=figsize)
+    if n_samples == 1:
+        axes = [axes]
+
+    for i in range(n_samples):
+        im = axes[i].imshow(w_np[i], cmap='RdBu_r', vmin=vmin, vmax=vmax, origin='lower')
+        axes[i].set_title(f't={i}')
+        axes[i].axis('off')
+        plt.colorbar(im, ax=axes[i], fraction=0.046)
+
+    fig.suptitle(title, fontsize=14, y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+
+    return fig
+
+
+def plot_velocity_field(
+    x: Tensor,
+    title: str = 'Velocity',
+    use_percentile: bool = True,
+    figsize: Tuple[int, int] = (15, 6),
+    save_path: Path = None,
+) -> plt.Figure:
+    """速度場を u, v, |v| の3行でプロット
+
+    Args:
+        x: (T, 2, H, W) or (2, H, W) 速度場
+        title: プロットタイトル
+        use_percentile: Trueならパーセンタイルで範囲決定
+        figsize: 図のサイズ
+        save_path: 保存先パス
+
+    Returns:
+        matplotlib Figure
+    """
+    if x.ndim == 3:
+        x = x[None, ...]
+
+    x_np = x.numpy() if isinstance(x, torch.Tensor) else x
+    T = x_np.shape[0]
+
+    fig, axes = plt.subplots(3, T, figsize=figsize)
+    if T == 1:
+        axes = axes[:, None]
+
+    if use_percentile:
+        u_range = np.percentile(x_np[:, 0], [2, 98])
+        v_range = np.percentile(x_np[:, 1], [2, 98])
+    else:
+        u_range = [x_np[:, 0].min(), x_np[:, 0].max()]
+        v_range = [x_np[:, 1].min(), x_np[:, 1].max()]
+
+    mag = np.sqrt(x_np[:, 0]**2 + x_np[:, 1]**2)
+
+    for t in range(T):
+        im0 = axes[0, t].imshow(x_np[t, 0], cmap='RdBu_r', vmin=u_range[0], vmax=u_range[1], origin='lower')
+        axes[0, t].set_title(f't={t}')
+        axes[0, t].axis('off')
+
+        im1 = axes[1, t].imshow(x_np[t, 1], cmap='RdBu_r', vmin=v_range[0], vmax=v_range[1], origin='lower')
+        axes[1, t].axis('off')
+
+        im2 = axes[2, t].imshow(mag[t], cmap='viridis', origin='lower')
+        axes[2, t].axis('off')
+
+    axes[0, 0].set_ylabel('u velocity')
+    axes[1, 0].set_ylabel('v velocity')
+    axes[2, 0].set_ylabel('|v| magnitude')
+
+    plt.colorbar(im0, ax=axes[0, :], shrink=0.6, label='u')
+    plt.colorbar(im1, ax=axes[1, :], shrink=0.6, label='v')
+    plt.colorbar(im2, ax=axes[2, :], shrink=0.6, label='|v|')
+
+    fig.suptitle(title, fontsize=14)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+
+    return fig
+
+
+def load_ibpm_data(
+    data_path: Path,
+    split: str = 'train',
+    normalize: bool = False,
+) -> Tensor:
+    """IBPMデータをロード
+
+    Args:
+        data_path: h5ファイルのあるディレクトリ
+        split: 'train' or 'test'
+        normalize: Trueの場合、正規化して返す
+
+    Returns:
+        data: (N, T, 2, H, W) 速度場テンソル
+    """
+    file_path = Path(data_path) / f'{split}.h5'
+    with h5py.File(file_path, 'r') as f:
+        data = torch.from_numpy(f['x'][:])
+
+    if normalize:
+        normalizer = IBPMNormalizer()
+        data = normalizer.normalize(data)
+
+    return data
+
+
+def load_trained_model(
+    run_dir: Path,
+    device: str = 'cuda',
+) -> Tuple[nn.Module, dict]:
+    """学習済みモデルをロード
+
+    Args:
+        run_dir: 学習済みモデルのディレクトリ（state_final.pthがある場所）
+        device: ロード先デバイス
+
+    Returns:
+        score: ロードされたスコアネットワーク
+        config: 設定辞書
+    """
+    run_dir = Path(run_dir)
+
+    # state_final.pth または state.pth を探す
+    if (run_dir / 'state_final.pth').exists():
+        state_path = run_dir / 'state_final.pth'
+    elif (run_dir / 'state.pth').exists():
+        state_path = run_dir / 'state.pth'
+    else:
+        raise FileNotFoundError(f"No state file found in {run_dir}")
+
+    config = load_config(run_dir)
+    score = make_score(**config)
+    score.load_state_dict(torch.load(state_path, map_location=device))
+    score = score.to(device)
+    score.eval()
+
+    return score, config
+
+
+def reconstruct_sparse(
+    x_star: Tensor,
+    score: nn.Module,
+    cond: Tensor,
+    subsample_rates: List[int] = [2, 4, 8, 16],
+    noise_std: float = 0.1,
+    steps: int = 256,
+    corrections: int = 1,
+    tau: float = 0.5,
+) -> Dict[int, Tensor]:
+    """複数のサブサンプルレートでスパース再構成を実行
+
+    Args:
+        x_star: (T, 2, H, W) 真の速度場
+        score: スコアネットワーク
+        cond: (1, C, H, W) 幾何条件
+        subsample_rates: サブサンプルレートのリスト
+        noise_std: 観測ノイズの標準偏差
+        steps: サンプリングステップ数
+        corrections: Langevin correctionの回数
+        tau: annealing parameter
+
+    Returns:
+        results: {subsample_rate: reconstructed_tensor} の辞書
+    """
+    results = {}
+    device = next(score.parameters()).device
+
+    for sub in subsample_rates:
+        def A(x, s=sub):
+            return x[..., ::s, ::s]
+
+        y_star = torch.normal(A(x_star), noise_std)
+
+        sde = VPSDE(
+            GaussianScore(
+                y_star,
+                A=A,
+                std=noise_std,
+                sde=VPSDE(score, shape=()),
+            ),
+            shape=x_star.shape,
+        ).to(device)
+
+        x_recon = sde.sample(c=cond, steps=steps, corrections=corrections, tau=tau).cpu()
+        results[sub] = x_recon
+
+    return results
