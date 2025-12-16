@@ -159,12 +159,5 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# Generated figures
-*.png
-
 # Training runs
 runs/
-
-# Generated reports/docs
-experiments/**/INVESTIGATION_REPORT.md
-experiments/**/KOLMOGOROV_VS_IBPM_COMPARISON.md
