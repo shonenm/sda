@@ -124,8 +124,9 @@ def train(i: int):
 
     # VPSDEを構築（Kolmogorov流と同様）
     # 入力形状: (window * 2, H, W) - 時間とチャネルをフラット化
+    # eta=0.01: デフォルトの0.001より大きくすることでサンプリングの数値安定性を向上
     shape = torch.Size((window * C, H, W))
-    sde = VPSDE(score_net.kernel, shape=shape).cuda()
+    sde = VPSDE(score_net.kernel, shape=shape, eta=0.01).cuda()
 
     # Optimizer
     optimizer = torch.optim.AdamW(

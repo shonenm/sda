@@ -588,14 +588,16 @@ def reconstruct_sparse(
 
         y_star = torch.normal(A(x_star), noise_std)
 
+        # eta=0.01 で数値安定性を向上（学習時と同じ設定）
         sde = VPSDE(
             GaussianScore(
                 y_star,
                 A=A,
                 std=noise_std,
-                sde=VPSDE(score, shape=()),
+                sde=VPSDE(score, shape=(), eta=0.01),
             ),
             shape=x_star.shape,
+            eta=0.01,
         ).to(device)
 
         x_recon = sde.sample(c=cond, steps=steps, corrections=corrections, tau=tau).cpu()

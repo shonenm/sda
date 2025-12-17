@@ -128,8 +128,8 @@ def unconditional_sample(
     print(f"Sampling shape: {shape_flat}")
     print(f"Condition shape: {c_batch.shape}")
 
-    # VPSDE でサンプリング
-    sde = VPSDE(score.kernel, shape=shape_flat).cuda()
+    # VPSDE でサンプリング（eta=0.01で数値安定性向上）
+    sde = VPSDE(score.kernel, shape=shape_flat, eta=0.01).cuda()
 
     for i in range(n_samples):
         print(f"  Generating sample {i+1}/{n_samples}...")
@@ -254,8 +254,8 @@ def diffusion_trajectory(
     inflow_profile = build_inflow_profile(H, W, U=1.0)
     cond = torch.stack([cylinder_mask, inflow_profile], dim=0).cuda()
 
-    # VPSDE でサンプリング（中間状態を記録）
-    sde = VPSDE(score.kernel, shape=shape_flat).cuda()
+    # VPSDE でサンプリング（中間状態を記録、eta=0.01で数値安定性向上）
+    sde = VPSDE(score.kernel, shape=shape_flat, eta=0.01).cuda()
     n_steps = 256
     record_steps = [0, 16, 32, 64, 128, 192, 255]
 
