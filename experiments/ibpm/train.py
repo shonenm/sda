@@ -46,7 +46,7 @@ CONFIG = {
     'kernel_size': 3,                     # 畳み込みカーネルのサイズ
     'activation': 'SiLU',                 # 活性化関数
     # 学習設定
-    'epochs': 100,                        # エポック数
+    'epochs': 500,                        # エポック数（精度向上のため増加）
     'batch_size': 4,                      # バッチサイズ（199×399解像度のためメモリ節約）
     'optimizer': 'AdamW',                 # オプティマイザ
     'learning_rate': 1e-4,                # 学習率
