@@ -604,3 +604,79 @@ def reconstruct_sparse(
         results[sub] = x_recon
 
     return results
+
+
+def plot_velocity_and_vorticity(
+    x: Tensor,
+    title: str = 'Velocity and Vorticity',
+    use_percentile: bool = True,
+    figsize: Tuple[int, int] = (15, 9),
+    save_path: Path = None,
+) -> plt.Figure:
+    """速度場 (u, v) と渦度を3行でプロット
+
+    Args:
+        x: (T, 2, H, W) or (2, H, W) 速度場
+        title: プロットタイトル
+        use_percentile: Trueならパーセンタイルで範囲決定
+        figsize: 図のサイズ
+        save_path: 保存先パス
+
+    Returns:
+        matplotlib Figure
+    """
+    if x.ndim == 3:
+        x = x[None, ...]
+
+    x_np = x.numpy() if isinstance(x, torch.Tensor) else x
+    T = x_np.shape[0]
+
+    # 渦度を計算
+    w = compute_vorticity(torch.from_numpy(x_np) if isinstance(x_np, np.ndarray) else x)
+    w_np = w.numpy() if isinstance(w, torch.Tensor) else w
+
+    fig, axes = plt.subplots(3, T, figsize=figsize)
+    if T == 1:
+        axes = axes[:, None]
+
+    # 範囲を決定
+    if use_percentile:
+        u_low, u_high = np.percentile(x_np[:, 0], [2, 98])
+        v_low, v_high = np.percentile(x_np[:, 1], [2, 98])
+        w_low, w_high = np.percentile(w_np, [2, 98])
+    else:
+        u_low, u_high = x_np[:, 0].min(), x_np[:, 0].max()
+        v_low, v_high = x_np[:, 1].min(), x_np[:, 1].max()
+        w_low, w_high = w_np.min(), w_np.max()
+
+    # 対称な範囲にする（発散カラーマップ用）
+    u_max = max(abs(u_low), abs(u_high))
+    v_max = max(abs(v_low), abs(v_high))
+    w_max = max(abs(w_low), abs(w_high))
+
+    for t in range(T):
+        im0 = axes[0, t].imshow(x_np[t, 0], cmap='RdBu_r', vmin=-u_max, vmax=u_max, origin='lower')
+        axes[0, t].set_title(f't={t}')
+        axes[0, t].axis('off')
+
+        im1 = axes[1, t].imshow(x_np[t, 1], cmap='RdBu_r', vmin=-v_max, vmax=v_max, origin='lower')
+        axes[1, t].axis('off')
+
+        im2 = axes[2, t].imshow(w_np[t], cmap='RdBu_r', vmin=-w_max, vmax=w_max, origin='lower')
+        axes[2, t].axis('off')
+
+    axes[0, 0].set_ylabel('u velocity')
+    axes[1, 0].set_ylabel('v velocity')
+    axes[2, 0].set_ylabel('vorticity')
+
+    plt.colorbar(im0, ax=axes[0, :], shrink=0.6, label='u')
+    plt.colorbar(im1, ax=axes[1, :], shrink=0.6, label='v')
+    plt.colorbar(im2, ax=axes[2, :], shrink=0.6, label='ω')
+
+    fig.suptitle(title, fontsize=14)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+
+    return fig

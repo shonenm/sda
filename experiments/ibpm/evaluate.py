@@ -24,6 +24,7 @@ from experiments.ibpm.utils import (
     compute_vorticity,
     load_ibpm_data,
     load_trained_model,
+    plot_velocity_and_vorticity,
     plot_vorticity,
     reconstruct_sparse,
 )
@@ -42,16 +43,15 @@ def visualize_data(data_path: Path, output_dir: Path) -> None:
     print(f"  Resolution: {train_data.shape[3]}x{train_data.shape[4]}")
     print(f"  Range: [{train_data.min():.3f}, {train_data.max():.3f}]")
 
-    # 複数サンプルのt=0を可視化
+    # 複数サンプルのt=0を可視化（u, v, 渦度の3行）
     sample_indices = [0, 10, 20, 30, 40, min(41, train_data.shape[0]-1)]
     frames = [train_data[i, 0] for i in sample_indices if i < train_data.shape[0]]
     x_train = torch.stack(frames)
-    w_train = compute_vorticity(x_train)
 
-    fig = plot_vorticity(
-        w_train,
+    fig = plot_velocity_and_vorticity(
+        x_train,
         title='Train Data: Different samples at t=0',
-        figsize=(20, 3),
+        figsize=(20, 9),
         save_path=output_dir / 'data_train_samples.png',
     )
     plt.close(fig)
@@ -87,11 +87,10 @@ def visualize_data(data_path: Path, output_dir: Path) -> None:
 
         for idx in range(min(3, test_data.shape[0])):
             x_test = test_data[idx, :8]
-            w_test = compute_vorticity(x_test)
-            fig = plot_vorticity(
-                w_test,
-                title=f'Test Sample {idx}: Vorticity Evolution',
-                figsize=(20, 3),
+            fig = plot_velocity_and_vorticity(
+                x_test,
+                title=f'Test Sample {idx}: Velocity and Vorticity Evolution',
+                figsize=(20, 9),
                 save_path=output_dir / f'data_test_sample_{idx}.png',
             )
             plt.close(fig)
@@ -131,6 +130,10 @@ def unconditional_sample(
     # VPSDE でサンプリング（eta=0.01で数値安定性向上）
     sde = VPSDE(score.kernel, shape=shape_flat, eta=0.01).cuda()
 
+    # 訓練データの統計（比較用）
+    train_data = load_ibpm_data(data_path, split='train')
+    train_ref = train_data[0, :T]  # 参照用
+
     for i in range(n_samples):
         print(f"  Generating sample {i+1}/{n_samples}...")
         x_sampled = sde.sample(torch.Size([1]), c=c_batch, steps=256, corrections=1).cpu()
@@ -138,21 +141,26 @@ def unconditional_sample(
 
         # 逆正規化して元のスケールに戻す
         x_vis_denorm = normalizer.denormalize(x_vis)
-        w_vis = compute_vorticity(x_vis_denorm)
 
-        fig = plot_vorticity(
-            w_vis,
+        # u, v, 渦度の3行でプロット
+        fig = plot_velocity_and_vorticity(
+            x_vis_denorm,
             title=f'Unconditional Sample {i+1}',
-            figsize=(20, 3),
+            figsize=(20, 9),
             save_path=output_dir / f'sample_uncond_{i+1}.png',
         )
         plt.close(fig)
         print(f"    Saved: {output_dir / f'sample_uncond_{i+1}.png'}")
 
-    # 統計比較（正規化後）
-    train_flat = x_sample.flatten(0, 1)
-    print(f"\n  Train stats (normalized):  mean={train_flat.mean():.4f}, std={train_flat.std():.4f}")
-    print(f"  Sample stats (normalized): mean={x_sampled.mean():.4f}, std={x_sampled.std():.4f}")
+        # 速度の統計表示
+        u_mean, u_std = x_vis_denorm[:, 0].mean().item(), x_vis_denorm[:, 0].std().item()
+        v_mean, v_std = x_vis_denorm[:, 1].mean().item(), x_vis_denorm[:, 1].std().item()
+        print(f"    Sample {i+1} stats: u(mean={u_mean:.4f}, std={u_std:.4f}), v(mean={v_mean:.4f}, std={v_std:.4f})")
+
+    # 訓練データとの統計比較
+    print(f"\n  Train data stats (reference):")
+    print(f"    u: mean={train_ref[:, 0].mean():.4f}, std={train_ref[:, 0].std():.4f}")
+    print(f"    v: mean={train_ref[:, 1].mean():.4f}, std={train_ref[:, 1].std():.4f}")
 
 
 def sparse_reconstruction(
@@ -184,12 +192,11 @@ def sparse_reconstruction(
     inflow_profile = build_inflow_profile(H, W, U=1.0)
     cond = torch.stack([cylinder_mask, inflow_profile], dim=0).unsqueeze(0).cuda()
 
-    # Ground truth 可視化（生データで）
-    w_star = compute_vorticity(x_star_raw)
-    fig = plot_vorticity(
-        w_star,
-        title='Ground Truth Vorticity',
-        figsize=(20, 3),
+    # Ground truth 可視化（生データで、u, v, 渦度の3行）
+    fig = plot_velocity_and_vorticity(
+        x_star_raw,
+        title='Ground Truth: Velocity and Vorticity',
+        figsize=(20, 9),
         save_path=output_dir / 'sparse_ground_truth.png',
     )
     plt.close(fig)
@@ -211,23 +218,17 @@ def sparse_reconstruction(
     for sub, x_recon_norm in results.items():
         # 逆正規化して可視化
         x_recon = normalizer.denormalize(x_recon_norm)
-        w_recon = compute_vorticity(x_recon)
-        fig = plot_vorticity(
-            w_recon,
+
+        # u, v, 渦度の3行でプロット
+        fig = plot_velocity_and_vorticity(
+            x_recon,
             title=f'Reconstructed (subsample={sub})',
-            figsize=(20, 3),
+            figsize=(20, 9),
             save_path=output_dir / f'sparse_sub{sub}_reconstructed.png',
         )
         plt.close(fig)
 
-        def A(x, s=sub):
-            return x[..., ::s, ::s]
-
-        # エラー計算は正規化空間で
-        y_obs = torch.normal(A(x_star_norm), 0.1)
-        error = (A(x_recon_norm) - y_obs).std()
-        print(f"  subsample={sub:2d}: error={error:.4f} (should be ~0.1)")
-        print(f"    Saved: {output_dir / f'sparse_sub{sub}_reconstructed.png'}")
+        print(f"  subsample={sub:2d}: Saved: {output_dir / f'sparse_sub{sub}_reconstructed.png'}")
 
 
 def diffusion_trajectory(
@@ -296,41 +297,54 @@ def diffusion_trajectory(
         t_val = 1.0 - step / n_steps
         print(f"  Step {step:3d} (t={t_val:.3f}): mean={x.mean():.4f}, std={x.std():.4f}")
 
-    # 可視化
-    fig, axes = plt.subplots(2, len(trajectory), figsize=(20, 6))
+    # 可視化（u, v, 渦度の3行）
+    fig, axes = plt.subplots(3, len(trajectory), figsize=(20, 9))
 
     for col, (step, x_flat) in enumerate(trajectory):
         t_val = 1.0 - step / n_steps
         x_vis = x_flat[0].unflatten(0, (window, 2))
         w = compute_vorticity(x_vis)[0]
         w_np = w.numpy()
+        u_np = x_vis[0, 0].numpy()
+        v_np = x_vis[0, 1].numpy()
 
+        # 範囲決定
         if step == 0:
-            vmin, vmax = -3, 3
+            u_vmin, u_vmax = -3, 3
+            v_vmin, v_vmax = -3, 3
+            w_vmin, w_vmax = -3, 3
         else:
-            low, high = np.percentile(w_np, [2, 98])
-            vmax = max(abs(low), abs(high))
-            vmin = -vmax
+            u_low, u_high = np.percentile(u_np, [2, 98])
+            u_vmax = max(abs(u_low), abs(u_high))
+            u_vmin = -u_vmax
 
-        im0 = axes[0, col].imshow(w_np, cmap='RdBu_r', vmin=vmin, vmax=vmax, origin='lower')
+            v_low, v_high = np.percentile(v_np, [2, 98])
+            v_vmax = max(abs(v_low), abs(v_high))
+            v_vmin = -v_vmax
+
+            w_low, w_high = np.percentile(w_np, [2, 98])
+            w_vmax = max(abs(w_low), abs(w_high))
+            w_vmin = -w_vmax
+
+        # u velocity
+        im0 = axes[0, col].imshow(u_np, cmap='RdBu_r', vmin=u_vmin, vmax=u_vmax, origin='lower')
         axes[0, col].set_title(f'Step {step}\nt={t_val:.2f}')
         axes[0, col].axis('off')
         plt.colorbar(im0, ax=axes[0, col], fraction=0.046)
 
-        u = x_vis[0, 0].numpy()
-        if step == 0:
-            u_vmin, u_vmax = -3, 3
-        else:
-            u_low, u_high = np.percentile(u, [2, 98])
-            u_vmax = max(abs(u_low), abs(u_high))
-            u_vmin = -u_vmax
-
-        im1 = axes[1, col].imshow(u, cmap='RdBu_r', vmin=u_vmin, vmax=u_vmax, origin='lower')
+        # v velocity
+        im1 = axes[1, col].imshow(v_np, cmap='RdBu_r', vmin=v_vmin, vmax=v_vmax, origin='lower')
         axes[1, col].axis('off')
         plt.colorbar(im1, ax=axes[1, col], fraction=0.046)
 
-    axes[0, 0].set_ylabel('Vorticity', fontsize=12)
-    axes[1, 0].set_ylabel('u velocity', fontsize=12)
+        # vorticity
+        im2 = axes[2, col].imshow(w_np, cmap='RdBu_r', vmin=w_vmin, vmax=w_vmax, origin='lower')
+        axes[2, col].axis('off')
+        plt.colorbar(im2, ax=axes[2, col], fraction=0.046)
+
+    axes[0, 0].set_ylabel('u velocity', fontsize=12)
+    axes[1, 0].set_ylabel('v velocity', fontsize=12)
+    axes[2, 0].set_ylabel('vorticity', fontsize=12)
 
     fig.suptitle('Diffusion Trajectory: Noise → Sample', fontsize=14)
     plt.tight_layout()
@@ -344,7 +358,7 @@ def compare_observations(
     output_dir: Path,
     subsample_rates: list = [2, 4, 8, 16],
 ) -> None:
-    """GT vs 各subsampleレートの観測を比較表示"""
+    """GT vs 各subsampleレートの観測を比較表示（u, v, 渦度の3行）"""
     print("\n" + "=" * 60)
     print("OBSERVATION COMPARISON")
     print("=" * 60)
@@ -356,25 +370,31 @@ def compare_observations(
     print(f"Ground truth shape: {x_star.shape}")
     print(f"Showing timestep: {t_show}")
 
-    fig, axes = plt.subplots(2, len(subsample_rates) + 1, figsize=(20, 8))
+    fig, axes = plt.subplots(3, len(subsample_rates) + 1, figsize=(20, 10))
 
     x_gt = x_star[t_show]
-    vel_mag_gt = torch.sqrt(x_gt[0]**2 + x_gt[1]**2)
+    u_gt = x_gt[0]
+    v_gt = x_gt[1]
     w_gt = compute_vorticity(x_star)[t_show]
 
-    vel_vmax = vel_mag_gt.max().item()
+    # 対称な範囲
+    u_vmax = max(abs(u_gt.min().item()), abs(u_gt.max().item()))
+    v_vmax = max(abs(v_gt.min().item()), abs(v_gt.max().item()))
     w_vmax = max(abs(w_gt.min().item()), abs(w_gt.max().item()))
 
     # Ground truth
-    im0 = axes[0, 0].imshow(vel_mag_gt.numpy(), cmap='viridis', vmin=0, vmax=vel_vmax, origin='lower')
+    im0 = axes[0, 0].imshow(u_gt.numpy(), cmap='RdBu_r', vmin=-u_vmax, vmax=u_vmax, origin='lower')
     axes[0, 0].set_title(f'Ground Truth\n{x_star.shape[2]}x{x_star.shape[3]}')
     axes[0, 0].axis('off')
-    plt.colorbar(im0, ax=axes[0, 0], fraction=0.046, label='|v|')
+    plt.colorbar(im0, ax=axes[0, 0], fraction=0.046, label='u')
 
-    im1 = axes[1, 0].imshow(w_gt.numpy(), cmap='RdBu_r', vmin=-w_vmax, vmax=w_vmax, origin='lower')
-    axes[1, 0].set_title('Vorticity')
+    im1 = axes[1, 0].imshow(v_gt.numpy(), cmap='RdBu_r', vmin=-v_vmax, vmax=v_vmax, origin='lower')
     axes[1, 0].axis('off')
-    plt.colorbar(im1, ax=axes[1, 0], fraction=0.046, label='ω')
+    plt.colorbar(im1, ax=axes[1, 0], fraction=0.046, label='v')
+
+    im2 = axes[2, 0].imshow(w_gt.numpy(), cmap='RdBu_r', vmin=-w_vmax, vmax=w_vmax, origin='lower')
+    axes[2, 0].axis('off')
+    plt.colorbar(im2, ax=axes[2, 0], fraction=0.046, label='ω')
 
     for i, sub in enumerate(subsample_rates):
         def A(x, s=sub):
@@ -383,7 +403,8 @@ def compare_observations(
         y_obs = torch.normal(A(x_star), 0.1)
         y_t = y_obs[t_show]
 
-        vel_mag_obs = torch.sqrt(y_t[0]**2 + y_t[1]**2)
+        u_obs = y_t[0]
+        v_obs = y_t[1]
         w_obs = compute_vorticity(y_obs)[t_show]
 
         H_sub, W_sub = y_t.shape[1], y_t.shape[2]
@@ -392,17 +413,22 @@ def compare_observations(
 
         print(f"  subsample={sub:2d}: {H_sub}x{W_sub} = {n_obs:,} pts ({pct:.1f}%)")
 
-        im_vel = axes[0, i+1].imshow(vel_mag_obs.numpy(), cmap='viridis', vmin=0, vmax=vel_vmax, origin='lower')
+        im_u = axes[0, i+1].imshow(u_obs.numpy(), cmap='RdBu_r', vmin=-u_vmax, vmax=u_vmax, origin='lower')
         axes[0, i+1].set_title(f'sub={sub}\n{H_sub}x{W_sub} ({pct:.1f}%)')
         axes[0, i+1].axis('off')
-        plt.colorbar(im_vel, ax=axes[0, i+1], fraction=0.046, label='|v|')
+        plt.colorbar(im_u, ax=axes[0, i+1], fraction=0.046, label='u')
 
-        im_w = axes[1, i+1].imshow(w_obs.numpy(), cmap='RdBu_r', vmin=-w_vmax, vmax=w_vmax, origin='lower')
+        im_v = axes[1, i+1].imshow(v_obs.numpy(), cmap='RdBu_r', vmin=-v_vmax, vmax=v_vmax, origin='lower')
         axes[1, i+1].axis('off')
-        plt.colorbar(im_w, ax=axes[1, i+1], fraction=0.046, label='ω')
+        plt.colorbar(im_v, ax=axes[1, i+1], fraction=0.046, label='v')
 
-    axes[0, 0].set_ylabel('Velocity Magnitude', fontsize=12)
-    axes[1, 0].set_ylabel('Vorticity', fontsize=12)
+        im_w = axes[2, i+1].imshow(w_obs.numpy(), cmap='RdBu_r', vmin=-w_vmax, vmax=w_vmax, origin='lower')
+        axes[2, i+1].axis('off')
+        plt.colorbar(im_w, ax=axes[2, i+1], fraction=0.046, label='ω')
+
+    axes[0, 0].set_ylabel('u velocity', fontsize=12)
+    axes[1, 0].set_ylabel('v velocity', fontsize=12)
+    axes[2, 0].set_ylabel('vorticity', fontsize=12)
 
     fig.suptitle(f'Sparse Observation Comparison (t={t_show}, noise std=0.1)', fontsize=14)
     plt.tight_layout()
