@@ -13,6 +13,12 @@ dependencies = [
   "torch",
   "h5py",
   "dawgz",
+  "matplotlib",
+  "tqdm",
+  "zuko",
+  "wandb",
+  "seaborn",
+  "pillow",
 ]
 
 [tool.setuptools]
