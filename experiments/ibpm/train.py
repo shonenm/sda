@@ -21,7 +21,7 @@ from tqdm import trange
 
 from sda.data import IBPMDataset
 from sda.score import VPSDE
-from sda.utils import save_config
+from sda.utils import save_config, slack_on_complete
 
 # Import from experiments.ibpm.utils with absolute path
 from experiments.ibpm.utils import make_score, PATH
@@ -35,27 +35,28 @@ else:
     DATA_PATH = Path('/workspace/data/ibpm_h5_wide_perturbed')
 
 # 学習設定
-# IBPM円柱流れ（199×399グリッド）の時系列を処理
+# IBPM円柱流れ（399×199グリッド）の時系列を処理
 CONFIG = {
     # アーキテクチャ
-    'window': 5,                          # 時間窓のサイズ（前後2ステップ+現在）
+    'window': 16,                         # 時間窓のサイズ（データセットに合わせる）
     'cond_channels': 2,                   # 条件チャネル数（mask + inflow）
     'embedding': 64,                      # 時刻埋め込みの次元数
-    'hidden_channels': (96, 192, 384),    # U-Netの各深さでのチャネル数（3段階）
-    'hidden_blocks': (3, 3, 3),           # 各深さでの残差ブロック数
+    'hidden_channels': (64, 128, 256),    # U-Netの各深さでのチャネル数
+    'hidden_blocks': (2, 2, 2),           # 各深さでの残差ブロック数
     'kernel_size': 3,                     # 畳み込みカーネルのサイズ
     'activation': 'SiLU',                 # 活性化関数
     # 学習設定
-    'epochs': 500,                        # エポック数（精度向上のため増加）
-    'batch_size': 4,                      # バッチサイズ（199×399解像度のためメモリ節約）
+    'epochs': 2000,                       # エポック数（大規模学習）
+    'batch_size': 2,                      # バッチサイズ（高解像度のためメモリ節約）
     'optimizer': 'AdamW',                 # オプティマイザ
     'learning_rate': 1e-4,                # 学習率
     'weight_decay': 1e-3,                 # 重み減衰
-    'scheduler': 'linear',                # 学習率スケジューラ
+    'scheduler': 'cosine',                # 学習率スケジューラ（長時間学習向け）
 }
 
 
-@job(array=1, cpus=4, gpus=1, ram='16GB', time='4:00:00')
+@job(array=1, cpus=4, gpus=1, ram='16GB', time='72:00:00')
+@slack_on_complete(success_msg="🎉 IBPM Training completed!")
 def train(i: int):
     """IBPM円柱流れモデルの学習ジョブ
 
@@ -214,12 +215,19 @@ def train(i: int):
 
 
 if __name__ == '__main__':
-    # SLURMバックエンドでジョブをスケジュール（3回の独立実行）
+    import os
+    from sda.utils import load_env_for_slurm
+
+    # .envから環境変数を読み込んでSLURM用にexport文を生成
+    env_exports = load_env_for_slurm(['SLACK_WEBHOOK_URL', 'WANDB_API_KEY'])
+    env_exports.append('export WANDB_SILENT=true')
+
+    # SLURMバックエンドでジョブをスケジュール
     schedule(
         train, # type: ignore
         name='IBPM_Training',
         backend='slurm',
         export='ALL',
         interpreter='/workspace/sda/.venv/bin/python',  # 共有venv内のPythonを使用
-        env=['export WANDB_SILENT=true'],
+        env=env_exports,
     )
