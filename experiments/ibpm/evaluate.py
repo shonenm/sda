@@ -220,35 +220,46 @@ def sparse_reconstruction(
     # 各subsampleレートで再構成（score.kernel + flattened shape）
     print(f"\nReconstructing with subsample rates: {subsample_rates}")
     import math
-    # ベースライン値を大きくして数値安定性を確保
-    # 小さすぎる分散(std=0.1, gamma=0.01)では勾配が爆発する
-    noise_std = 0.2  # 観測ノイズ（ベースライン）
-    gamma_base = 0.04  # gamma（ベースライン）
     steps = 256
 
-    # Dual Scaling: std と gamma の両方をスケーリング
-    # gamma項 γ(σ/μ)² が t > 0.1 で支配的になるため、stdだけでは不十分
-    # 詳細: docs/ibpm/gaussian_score_scaling_issue.md section 8
+    # === Clamped Linear Scaling ===
+    # 詳細: docs/ibpm/gaussian_score_scaling_issue.md section 13
+
+    # ベースパラメータ（Energy Ratio 1.0 を目指して調整）
+    BASE_STD = 0.2
+    BASE_GAMMA = 0.04
+
+    # 安全装置（Floor）: これ以下には絶対に下げない
+    # std < 0.15 で危険域、0.10 で爆発確定
+    MIN_STD = 0.15
+    MIN_GAMMA = 0.02
+
+    # 基準: sub=4
     n_obs_ref = (H // 4) * (W // 4) * T * C
 
     for sub in subsample_rates:
         n_obs = (H // sub) * (W // sub) * T * C
         ratio = n_obs / n_obs_ref
 
-        # Dual Scaling: 全時刻で勾配比率を一定に保つ
-        std_scaled = noise_std * math.sqrt(ratio)
-        gamma_scaled = gamma_base * ratio
-        print(f"  subsample={sub:2d} (std={std_scaled:.4f}, gamma={gamma_scaled:.6f})...", end=" ", flush=True)
+        # Clamped Linear Scaling: Linear Scalingに最小値フロアを設定
+        raw_std = BASE_STD * ratio
+        raw_gamma = BASE_GAMMA * (ratio ** 2)
+        std_scaled = max(raw_std, MIN_STD)
+        gamma_scaled = max(raw_gamma, MIN_GAMMA)
+
+        clamped_std = " (clamped)" if raw_std < MIN_STD else ""
+        clamped_gamma = " (clamped)" if raw_gamma < MIN_GAMMA else ""
+        print(f"  subsample={sub:2d} (std={std_scaled:.4f}{clamped_std}, gamma={gamma_scaled:.6f}{clamped_gamma})...", end=" ", flush=True)
 
         # 空間サブサンプリング演算子
         def A(x, s=sub):
             return x[..., ::s, ::s]
 
-        # 観測（flattened形式）- ノイズはオリジナルのstdで生成
-        y_star = torch.normal(A(x_star_flat), noise_std)
+        # 観測（flattened形式）- ノイズはベースラインstdで生成
+        y_star = torch.normal(A(x_star_flat), BASE_STD)
 
         # score.kernelを使用（学習時と同じ）
-        # Dual Scaling: std と gamma の両方をスケーリング
+        # Clamped Linear Scaling: std と gamma をスケーリング（最小値フロア付き）
         sde = VPSDE(
             GaussianScore(
                 y_star,
@@ -276,9 +287,24 @@ def sparse_reconstruction(
         # 逆正規化して可視化
         x_recon = normalizer.denormalize(x_recon_norm)
 
-        # 値範囲の診断出力
-        print(f"\n    [診断] 正規化後: min={x_recon_norm.min():.2f}, max={x_recon_norm.max():.2f}")
-        print(f"    [診断] 逆正規化後: min={x_recon.min():.2f}, max={x_recon.max():.2f}")
+        # === 診断指標（正規化空間で比較） ===
+        # 1. 値の範囲 (Range)
+        recon_min = x_recon_norm.min().item()
+        recon_max = x_recon_norm.max().item()
+        gt_min = x_star_norm.min().item()
+        gt_max = x_star_norm.max().item()
+
+        # 2. 標準偏差の比率 (Energy Ratio) ← 最重要
+        recon_std = x_recon_norm.std().item()
+        gt_std = x_star_norm.std().item()
+        energy_ratio = recon_std / gt_std
+
+        # 3. RMSE
+        rmse = torch.sqrt(torch.mean((x_recon_norm - x_star_norm) ** 2)).item()
+
+        print(f"\n    [診断] Range: [{recon_min:.2f}, {recon_max:.2f}] (GT: [{gt_min:.2f}, {gt_max:.2f}])")
+        print(f"    [診断] Energy Ratio: {energy_ratio:.3f} (recon_std={recon_std:.3f}, gt_std={gt_std:.3f})")
+        print(f"    [診断] RMSE: {rmse:.4f}")
 
         # u, v, 渦度の3行でプロット
         fig = plot_velocity_and_vorticity(
