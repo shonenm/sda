@@ -12,7 +12,11 @@ import h5py
 from dawgz import job, after, schedule
 from typing import *
 
+from sda.paths import get_data_dir
 from utils import *
+
+# データディレクトリ（lorenz実験用）
+DATA_DIR = get_data_dir('lorenz')
 
 
 @job(cpus=1, ram='1GB', time='00:05:00')
@@ -47,13 +51,13 @@ def simulate():
 
     # HDF5形式で保存
     for name, x in splits.items():
-        with h5py.File(PATH / f'data/{name}.h5', mode='w') as f:
+        with h5py.File(DATA_DIR / f'{name}.h5', mode='w') as f:
             f.create_dataset('x', data=x, dtype=np.float32)
 
 
 if __name__ == '__main__':
     # データディレクトリの作成
-    (PATH / 'data').mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     # SLURMバックエンドでジョブをスケジュール（単一ジョブ、5分）
     schedule(

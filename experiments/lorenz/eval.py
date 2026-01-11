@@ -17,13 +17,17 @@ from dawgz import job, after, context, ensure, schedule
 from typing import *
 
 from sda.mcs import *
+from sda.paths import get_results_dir
 from sda.score import *
 from sda.utils import *
 
 from utils import *
 
+# 結果ディレクトリ（lorenz実験用）
+RESULTS_DIR = get_results_dir('lorenz')
 
-@ensure(lambda: (PATH / f'results/obs.h5').exists())
+
+@ensure(lambda: (RESULTS_DIR / 'obs.h5').exists())
 @job(cpus=1, ram='1GB', time='00:05:00')
 def observations():
     """合成観測データの生成
@@ -40,7 +44,7 @@ def observations():
     # 高頻度・高ノイズ観測（全時刻、σ=0.25）
     y_hi = np.random.normal(x[:, :, :1], 0.25)
 
-    with h5py.File(PATH / 'results/obs.h5', mode='w') as f:
+    with h5py.File(RESULTS_DIR / 'obs.h5', mode='w') as f:
         f.create_dataset('lo', data=y_lo)
         f.create_dataset('hi', data=y_hi)
 
@@ -75,7 +79,7 @@ for name, local in [
             chain = make_chain()
 
             # 観測データの読み込み
-            with h5py.File(PATH / 'results/obs.h5', mode='r') as f:
+            with h5py.File(RESULTS_DIR / 'obs.h5', mode='r') as f:
                 y = torch.from_numpy(f[freq][i])
 
             # 観測演算子: 状態からx座標のみを抽出
@@ -98,7 +102,7 @@ for name, local in [
             w1 = emd(x, x_).item()  # 推定の安定性（2回の推定間のEMD）
 
             # 結果をCSVに記録
-            with open(PATH / f'results/stats_{freq}.csv', mode='a') as f:
+            with open(RESULTS_DIR / f'stats_{freq}.csv', mode='a') as f:
                 f.write(f'{i},ground-truth,,{log_px},{log_py},{w1}\n')
 
             print('GT:', log_px, log_py, w1, flush=True)
@@ -129,7 +133,7 @@ for name, local in [
                 w1 = emd(x, x_).item()  # 真の事後分布（粒子フィルタ）とのEMD
 
                 # 結果をCSVに記録
-                with open(PATH / f'results/stats_{freq}.csv', mode='a') as f:
+                with open(RESULTS_DIR / f'stats_{freq}.csv', mode='a') as f:
                     f.write(f'{i},{name},{C},{log_px},{log_py},{w1}\n')
 
                 print(f'{C:02d}:', log_px, log_py, w1, flush=True)
@@ -138,8 +142,7 @@ for name, local in [
 
 
 if __name__ == '__main__':
-    # 結果ディレクトリの作成
-    (PATH / 'results').mkdir(parents=True, exist_ok=True)
+    # 結果ディレクトリは get_results_dir() で自動作成済み
 
     # SLURMバックエンドで全評価ジョブをスケジュール
     # 5モデル × 2観測シナリオ × 64データ = 640ジョブ

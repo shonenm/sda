@@ -28,15 +28,10 @@ except ImportError:
     KolmogorovFlow = None
 
 
-# データとモデルの保存先パスの設定
-# 環境変数SCRATCHが存在する場合はそちらを優先（HPC環境対応）
-if 'SCRATCH' in os.environ:
-    SCRATCH = os.environ['SCRATCH']
-    PATH = Path(SCRATCH) / 'sda/kolmogorov'  # 注: パスは'kolmogorov'のまま（コードの再利用）
-else:
-    PATH = Path('.')
+# パス設定を一元管理モジュールからインポート
+from sda.paths import get_project_root
 
-PATH.mkdir(parents=True, exist_ok=True)
+PATH = get_project_root()
 
 
 def make_chain() -> 'MarkovChain':

@@ -15,11 +15,15 @@ from dawgz import job, after, ensure, schedule
 from typing import *
 
 from sda.mcs import KolmogorovFlow
+from sda.paths import get_data_dir
 
 from .utils import *
 
+# データディレクトリ（kolmogorov実験用）
+DATA_DIR = get_data_dir('kolmogorov')
 
-@ensure(lambda i: (PATH / f'data/x_{i:06d}.npy').exists())
+
+@ensure(lambda i: (DATA_DIR / f'x_{i:06d}.npy').exists())
 @job(array=1024, cpus=1, ram='1GB', time='00:05:00')
 def simulate(i: int):
     """Kolmogorov流の単一軌道をシミュレート
@@ -41,7 +45,7 @@ def simulate(i: int):
     # バーンイン期間を除外（定常状態の64ステップのみ保存）
     x = x[64:]
 
-    np.save(PATH / f'data/x_{i:06d}.npy', x)
+    np.save(DATA_DIR / f'x_{i:06d}.npy', x)
 
 
 @after(simulate) # type: ignore
@@ -52,7 +56,7 @@ def aggregate():
     1024個の.npyファイルを読み込み、空間解像度を256→64に粗視化し、
     訓練/検証/テストデータ（8:1:1の比率）に分割してHDF5形式で保存
     """
-    files = sorted(PATH.glob('data/x_*.npy'))
+    files = sorted(DATA_DIR.glob('x_*.npy'))
     length = len(files)
 
     # データ分割: 訓練80%、検証10%、テスト10%
@@ -66,7 +70,7 @@ def aggregate():
     }
 
     for name, files in splits.items():
-        with h5py.File(PATH / f'data/{name}.h5', mode='w') as f:
+        with h5py.File(DATA_DIR / f'{name}.h5', mode='w') as f:
             # データセット作成: (サンプル数, 時間, チャネル, 高さ, 幅)
             dset = f.create_dataset(
                 'x',
@@ -84,7 +88,7 @@ def aggregate():
 
 if __name__ == '__main__':
     # データディレクトリの作成
-    (PATH / 'data').mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     # SLURMバックエンドでジョブをスケジュール
     # simulate: 1024個のジョブ配列（各5分）

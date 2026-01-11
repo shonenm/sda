@@ -18,6 +18,7 @@ import torch
 from pathlib import Path
 
 from sda.data.ibpm_dataset import build_cylinder_mask, build_inflow_profile, IBPMDataset, IBPMNormalizer
+from sda.paths import get_results_dir
 from sda.score import VPSDE
 
 from experiments.ibpm.utils import (
@@ -634,12 +635,12 @@ def debug_model(
 
 
 def main():
-    # デフォルト出力先: プロジェクト内 results/ibpm/evaluate/
-    default_output = Path(__file__).parent.parent.parent / 'results' / 'ibpm' / 'evaluate'
+    # デフォルト出力先: results/ibpm/evaluate/
+    default_output = get_results_dir('ibpm') / 'evaluate'
 
     parser = argparse.ArgumentParser(description='IBPM Flow 実験の評価')
     parser.add_argument('--run-dir', type=Path, required=True, help='学習済みモデルのディレクトリ')
-    parser.add_argument('--data-path', type=Path, default=Path('/workspace/data/ibpm_h5_wide_perturbed'),
+    parser.add_argument('--data-path', type=Path, default=Path('/home/devuser/fluid-sbi/data/ibpm_h5_400x200'),
                         help='IBPMデータのパス')
     parser.add_argument('--output-dir', type=Path, default=default_output,
                         help='出力ディレクトリ')

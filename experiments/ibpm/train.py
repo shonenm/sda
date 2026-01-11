@@ -32,7 +32,7 @@ import os
 if 'SCRATCH' in os.environ:
     DATA_PATH = Path(os.environ['SCRATCH']) / 'sda/ibpm'
 else:
-    DATA_PATH = Path('/workspace/data/ibpm_h5_wide_perturbed')
+    DATA_PATH = Path('/home/devuser/fluid-sbi/data/ibpm_h5_400x200')
 
 # 学習設定
 # IBPM円柱流れ（399×199グリッド）の時系列を処理
@@ -228,6 +228,6 @@ if __name__ == '__main__':
         name='IBPM_Training',
         backend='slurm',
         export='ALL',
-        interpreter='/workspace/sda/.venv/bin/python',  # 共有venv内のPythonを使用
+        interpreter='/home/devuser/fluid-sbi/sda/.venv/bin/python',
         env=env_exports,
     )

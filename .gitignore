@@ -5,6 +5,7 @@
 # Data
 *.h5
 *.npy
+data/
 
 # DAWGZ
 .dawgz/
