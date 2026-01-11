@@ -108,7 +108,7 @@ for name, local in [
             print('GT:', log_px, log_py, w1, flush=True)
 
             # スコアモデルによる事後分布推定
-            score = load_score(PATH / f'runs/{name}/state.pth', local=local)
+            score = load_score(PATH / f'runs/lorenz/{name}/state.pth', local=local)
             # ガウス尤度でスコアを条件付ける
             sde = VPSDE(
                 GaussianScore(

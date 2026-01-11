@@ -2,11 +2,11 @@
 """IBPM Flow 実験の評価スクリプト
 
 Usage:
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm_vpsde_xxx --mode all
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm_vpsde_xxx --mode data
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm_vpsde_xxx --mode sample
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm_vpsde_xxx --mode sparse
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm_vpsde_xxx --mode debug
+    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode all
+    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode data
+    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode sample
+    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode sparse
+    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode debug
 """
 
 import argparse

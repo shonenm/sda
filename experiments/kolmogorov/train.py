@@ -66,7 +66,7 @@ def train(i: int):
         notes=f'Kolmogorov flow with forcing, run {i+1}/3. Training with window={window}, lr={lr:.0e}',
         config=CONFIG,
     )
-    runpath = PATH / f'runs/{run.name}_{run.id}'
+    runpath = PATH / f'runs/kolmogorov/{run.name}_{run.id}'
     runpath.mkdir(parents=True, exist_ok=True)
 
     save_config(CONFIG, runpath)

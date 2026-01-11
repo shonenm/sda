@@ -84,7 +84,7 @@ def train(i: int):
         notes=f'IBPM with VPSDE (Kolmogorov-style), run {i+1}',
         config=CONFIG,
     )
-    runpath = PATH / f'runs/{run.name}_{run.id}'
+    runpath = PATH / f'runs/ibpm/{run.name}_{run.id}'
     runpath.mkdir(parents=True, exist_ok=True)
 
     save_config(CONFIG, runpath)

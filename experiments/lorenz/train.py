@@ -67,7 +67,7 @@ def train_global(i: int):
     """
     # WandBで実験管理
     run = wandb.init(project='sda-lorenz', group='global', config=GLOBAL_CONFIG)
-    runpath = PATH / f'runs/{run.name}_{run.id}'
+    runpath = PATH / f'runs/lorenz/{run.name}_{run.id}'
     runpath.mkdir(parents=True, exist_ok=True)
 
     save_config(GLOBAL_CONFIG, runpath)
@@ -129,7 +129,7 @@ def train_local(i: int):
     """
     # WandBで実験管理
     run = wandb.init(project='sda-lorenz', group='local', config=LOCAL_CONFIG)
-    runpath = PATH / f'runs/{run.name}_{run.id}'
+    runpath = PATH / f'runs/lorenz/{run.name}_{run.id}'
     runpath.mkdir(parents=True, exist_ok=True)
 
     save_config(LOCAL_CONFIG, runpath)
