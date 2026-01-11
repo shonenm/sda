@@ -200,6 +200,7 @@ def sparse_reconstruction(
     # Flatten（学習時と同じ形式: (T*C, H, W) = (32, H, W)）
     x_star_flat = x_star_norm.flatten(0, 1)
     print(f"Flattened shape: {x_star_flat.shape}")
+    print(f"Ground truth 値範囲: raw=[{x_star_raw.min():.2f}, {x_star_raw.max():.2f}], norm=[{x_star_norm.min():.2f}, {x_star_norm.max():.2f}]")
 
     # 幾何条件を生成
     cylinder_mask = build_cylinder_mask(H, W, center=(100.0, 100.0), radius=12.5)
@@ -219,14 +220,16 @@ def sparse_reconstruction(
     # 各subsampleレートで再構成（score.kernel + flattened shape）
     print(f"\nReconstructing with subsample rates: {subsample_rates}")
     import math
-    noise_std = 0.1
+    # ベースライン値を大きくして数値安定性を確保
+    # 小さすぎる分散(std=0.1, gamma=0.01)では勾配が爆発する
+    noise_std = 0.2  # 観測ノイズ（ベースライン）
+    gamma_base = 0.04  # gamma（ベースライン）
     steps = 256
 
     # Dual Scaling: std と gamma の両方をスケーリング
     # gamma項 γ(σ/μ)² が t > 0.1 で支配的になるため、stdだけでは不十分
     # 詳細: docs/ibpm/gaussian_score_scaling_issue.md section 8
     n_obs_ref = (H // 4) * (W // 4) * T * C
-    gamma_base = 0.01  # GaussianScore のデフォルト値
 
     for sub in subsample_rates:
         n_obs = (H // sub) * (W // sub) * T * C
@@ -235,7 +238,7 @@ def sparse_reconstruction(
         # Dual Scaling: 全時刻で勾配比率を一定に保つ
         std_scaled = noise_std * math.sqrt(ratio)
         gamma_scaled = gamma_base * ratio
-        print(f"  subsample={sub:2d} (std={std_scaled:.4f}, gamma={gamma_scaled:.4f})...", end=" ", flush=True)
+        print(f"  subsample={sub:2d} (std={std_scaled:.4f}, gamma={gamma_scaled:.6f})...", end=" ", flush=True)
 
         # 空間サブサンプリング演算子
         def A(x, s=sub):
@@ -272,6 +275,10 @@ def sparse_reconstruction(
 
         # 逆正規化して可視化
         x_recon = normalizer.denormalize(x_recon_norm)
+
+        # 値範囲の診断出力
+        print(f"\n    [診断] 正規化後: min={x_recon_norm.min():.2f}, max={x_recon_norm.max():.2f}")
+        print(f"    [診断] 逆正規化後: min={x_recon.min():.2f}, max={x_recon.max():.2f}")
 
         # u, v, 渦度の3行でプロット
         fig = plot_velocity_and_vorticity(
