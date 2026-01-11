@@ -226,6 +226,7 @@ def sparse_reconstruction(
     # 詳細: docs/ibpm/gaussian_score_scaling_issue.md section 13
 
     # ベースパラメータ（Energy Ratio 1.0 を目指して調整）
+    # BASE_STD=0.15でsub=8,16が爆発傾向 → 0.2に戻す
     BASE_STD = 0.2
     BASE_GAMMA = 0.04
 
