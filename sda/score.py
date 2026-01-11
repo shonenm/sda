@@ -495,11 +495,16 @@ class GaussianScore(nn.Module):
     ガウシアン逆問題のためのスコアモジュール（より一般的な定式化）
     観測ノイズと拡散ノイズの両方を考慮
     DPS（Diffusion Posterior Sampling）
-    -sigma(t) · s(x(t), t | y)（＝“負のσ倍の事後スコア”）を返す形
-    
-    観測ノイズと拡散ノイズの両方を考慮し、log-likelihood の勾配を明示的に使う“ベイズ的”な版
+    -sigma(t) · s(x(t), t | y)（＝"負のσ倍の事後スコア"）を返す形
+
+    観測ノイズと拡散ノイズの両方を考慮し、log-likelihood の勾配を明示的に使う"ベイズ的"な版
 
     .. math:: p(y | x) = N(y | A(x), Σ)
+
+    Args:
+        normalize: If True, use .mean() instead of .sum() for log-likelihood.
+            This prevents gradient magnitude from scaling with observation count,
+            which is important for high-resolution inverse problems (e.g., IBPM).
 
     Note:
         This module returns :math:`-\sigma(t) s(x(t), t | y)`.
@@ -513,6 +518,7 @@ class GaussianScore(nn.Module):
         sde: VPSDE,                           # ベースとなるSDE
         gamma: Union[float, Tensor] = 1e-2,   # ノイズ分散の調整係数
         detach: bool = False,                 # 勾配の切断フラグ
+        normalize: bool = False,              # 観測点数で正規化（高解像度向け）
     ):
         super().__init__()
 
@@ -523,6 +529,7 @@ class GaussianScore(nn.Module):
         self.A = A
         self.sde = sde
         self.detach = detach
+        self.normalize = normalize
 
     def forward(self, x: Tensor, t: Tensor, c: Tensor = None) -> Tensor:
         mu, sigma = self.sde.mu(t), self.sde.sigma(t)
@@ -546,7 +553,12 @@ class GaussianScore(nn.Module):
             var = self.std ** 2 + self.gamma * (sigma / mu) ** 2
 
             # 対数尤度
-            log_p = -(err ** 2 / var).sum() / 2
+            # normalize=True: .mean()で観測点数に依存しない勾配スケール
+            # normalize=False: .sum()で後方互換性を維持
+            if self.normalize:
+                log_p = -(err ** 2 / var).mean() / 2
+            else:
+                log_p = -(err ** 2 / var).sum() / 2
 
         # 対数尤度の勾配
         s, = torch.autograd.grad(log_p, x)
