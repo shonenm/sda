@@ -1,10 +1,17 @@
 r"""Helpers"""
 
+import functools
 import h5py
 import json
 import math
+import os
 import random
+import socket
+import time
+import traceback
 import torch
+import urllib.request
+import urllib.error
 
 # Optional import for Optimal Transport (used for W2 distance computation)
 try:
@@ -21,6 +28,188 @@ from typing import *
 from .score import *
 
 
+# =============================================================================
+# Slack通知機能
+# =============================================================================
+
+def slack_notify(
+    message: str,
+    webhook_url: str = None,
+    username: str = None,
+    icon_emoji: str = ':robot_face:',
+) -> bool:
+    """Slackにメッセージを送信
+
+    環境変数 SLACK_WEBHOOK_URL が設定されていれば自動的に使用。
+    設定されていない場合は何もせず False を返す（エラーにはならない）。
+
+    Args:
+        message: 送信するメッセージ
+        webhook_url: Slack Webhook URL（省略時は環境変数から取得）
+        username: 表示名（省略時はホスト名）
+        icon_emoji: アイコン絵文字
+
+    Returns:
+        送信成功時True、失敗または未設定時False
+    """
+    url = webhook_url or os.environ.get('SLACK_WEBHOOK_URL')
+    if not url:
+        return False
+
+    if username is None:
+        username = f"sda@{socket.gethostname()}"
+
+    payload = json.dumps({
+        'text': message,
+        'username': username,
+        'icon_emoji': icon_emoji,
+    }).encode('utf-8')
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={'Content-Type': 'application/json'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        return False
+
+
+def slack_on_complete(
+    success_msg: str = None,
+    error_msg: str = None,
+    include_traceback: bool = True,
+):
+    """関数完了時にSlack通知を送るデコレータ
+
+    環境変数 SLACK_WEBHOOK_URL が設定されている場合のみ通知。
+
+    Args:
+        success_msg: 成功時のメッセージ（省略時は自動生成）
+        error_msg: エラー時のメッセージ（省略時は自動生成）
+        include_traceback: エラー時にトレースバックを含めるか
+
+    Example:
+        @slack_on_complete()
+        def train():
+            ...
+
+        @slack_on_complete(success_msg="Training finished!")
+        def my_job():
+            ...
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            func_name = func.__name__
+            start_time = time.time()
+
+            try:
+                result = func(*args, **kwargs)
+                elapsed = time.time() - start_time
+                elapsed_str = _format_duration(elapsed)
+
+                msg = success_msg or f"✅ `{func_name}` completed successfully"
+                msg += f"\n⏱️ Duration: {elapsed_str}"
+
+                slack_notify(msg)
+                return result
+
+            except Exception as e:
+                elapsed = time.time() - start_time
+                elapsed_str = _format_duration(elapsed)
+
+                msg = error_msg or f"❌ `{func_name}` failed with error"
+                msg += f"\n⏱️ Duration: {elapsed_str}"
+                msg += f"\n🔴 Error: {type(e).__name__}: {e}"
+
+                if include_traceback:
+                    tb = traceback.format_exc()
+                    # Slack message limit対策（最後の1000文字）
+                    if len(tb) > 1000:
+                        tb = "...\n" + tb[-1000:]
+                    msg += f"\n```\n{tb}\n```"
+
+                slack_notify(msg)
+                raise
+
+        return wrapper
+    return decorator
+
+
+def _format_duration(seconds: float) -> str:
+    """秒数を人間が読みやすい形式に変換"""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m {s}s"
+    else:
+        h, rem = divmod(int(seconds), 3600)
+        m, s = divmod(rem, 60)
+        return f"{h}h {m}m {s}s"
+
+
+def load_env_for_slurm(
+    keys: List[str],
+    env_file: Path = None,
+) -> List[str]:
+    """指定したキーの環境変数をSLURM用のexport文として取得
+
+    以下の順序で値を探す:
+    1. 現在の環境変数 (os.environ)
+    2. .envファイル（プロジェクトルートを自動検出）
+
+    Args:
+        keys: 取得したい環境変数のキー名リスト
+        env_file: .envファイルのパス（省略時は自動検出）
+
+    Returns:
+        export文のリスト（例: ['export SLACK_WEBHOOK_URL="https://..."']）
+    """
+    # .envファイルの自動検出
+    if env_file is None:
+        # このファイルの親ディレクトリから上に向かって.envを探す
+        current = Path(__file__).resolve().parent
+        for _ in range(5):  # 最大5階層上まで
+            candidate = current / '.env'
+            if candidate.exists():
+                env_file = candidate
+                break
+            current = current.parent
+
+    # .envファイルを読み込み（シンプルなパーサー）
+    env_from_file = {}
+    if env_file and env_file.exists():
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, _, value = line.partition('=')
+                    key = key.strip()
+                    value = value.strip()
+                    # クォートを除去
+                    if (value.startswith('"') and value.endswith('"')) or \
+                       (value.startswith("'") and value.endswith("'")):
+                        value = value[1:-1]
+                    env_from_file[key] = value
+
+    # export文を生成
+    exports = []
+    for key in keys:
+        # 現在の環境変数を優先、なければ.envから
+        value = os.environ.get(key) or env_from_file.get(key, '')
+        if value:
+            # シェルエスケープ（シンプル版）
+            escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+            exports.append(f'export {key}="{escaped}"')
+
+    return exports
+
+
+# =============================================================================
 # 利用可能な活性化関数の辞書
 ACTIVATIONS = {
     'ReLU': torch.nn.ReLU,
