@@ -31,9 +31,9 @@ class IBPMNormalizer:
     """
 
     # 学習データから計算したデフォルト統計量
-    # train.h5: (42, 16, 2, 199, 399)
-    DEFAULT_MEAN = torch.tensor([0.999539, -0.000003])  # [u_mean, v_mean]
-    DEFAULT_STD = torch.tensor([0.247249, 0.151491])    # [u_std, v_std]
+    # 127×127解像度データ（IBPM 128×128シミュレーション出力）
+    DEFAULT_MEAN = torch.tensor([0.998540, 0.000000])  # [u_mean, v_mean]
+    DEFAULT_STD = torch.tensor([0.415285, 0.207527])   # [u_std, v_std]
 
     def __init__(
         self,
@@ -240,13 +240,13 @@ class IBPMDataset(Dataset):
         self.T, self.N, self.C, self.H, self.W = self.data.shape
 
         # 円柱パラメータ
-        # 199×399解像度、領域 x∈[-4,12], y∈[-4,4]、円柱中心(0, 0.01)の場合:
-        # center_x = (0 - (-4)) / (16/399) ≈ 100, center_y = (0 - (-4)) / (8/199) ≈ 100
-        # radius = 0.5 / (8/199) ≈ 12.5
+        # 127×127解像度、領域 x∈[-2,2], y∈[-2,2]、円柱中心(0, 0)の場合:
+        # center = (0 - (-2)) / (4/127) = 63.5
+        # radius = 0.5 / (4/127) = 15.875
         if cylinder_params is None:
             cylinder_params = {
-                'center': (100.0, 100.0),  # (W方向, H方向)のピクセル座標
-                'radius': 12.5,
+                'center': (63.5, 63.5),  # (W方向, H方向)のピクセル座標
+                'radius': 15.875,
             }
         self.cylinder_params = cylinder_params
 
