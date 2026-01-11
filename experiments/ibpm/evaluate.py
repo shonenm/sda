@@ -113,7 +113,7 @@ def unconditional_sample(
     normalizer = IBPMNormalizer()
 
     # データセットから条件と形状を取得（正規化済み）
-    window = config.get('window', 5)
+    window = config.get('window', 16)
     ds = IBPMDataset(str(data_path / 'train.h5'), time_window=window, normalize=True)
     x_sample, c_sample, _ = ds[0]
 
@@ -165,11 +165,17 @@ def unconditional_sample(
 
 def sparse_reconstruction(
     score: torch.nn.Module,
+    config: dict,
     data_path: Path,
     output_dir: Path,
     subsample_rates: list = [2, 4, 8, 16],
 ) -> None:
-    """スパース観測からの再構成"""
+    """スパース観測からの再構成
+
+    学習時と同じ方式でscore.kernelを使用し、flattened shape (T*C, H, W) で処理
+    """
+    from sda.score import GaussianScore
+
     print("\n" + "=" * 60)
     print("SPARSE OBSERVATION RECONSTRUCTION")
     print("=" * 60)
@@ -177,17 +183,24 @@ def sparse_reconstruction(
     # 正規化用のNormalizer
     normalizer = IBPMNormalizer()
 
+    # windowサイズ（学習時と同じtimesteps数を使用）
+    window = config.get('window', 16)
+
     # テストデータをロード（生データ）
     test_data = load_ibpm_data(data_path, split='test')
-    n_timesteps = min(8, test_data.shape[1])
-    x_star_raw = test_data[0, :n_timesteps]
+    n_timesteps = min(window, test_data.shape[1])
+    x_star_raw = test_data[0, :n_timesteps]  # (T, C, H, W) = (16, 2, H, W)
+    T, C, H, W = x_star_raw.shape
     print(f"Ground truth shape: {x_star_raw.shape}")
 
     # 正規化（モデルは正規化空間で動作）
     x_star_norm = normalizer.normalize(x_star_raw)
 
+    # Flatten（学習時と同じ形式: (T*C, H, W) = (32, H, W)）
+    x_star_flat = x_star_norm.flatten(0, 1)
+    print(f"Flattened shape: {x_star_flat.shape}")
+
     # 幾何条件を生成
-    H, W = x_star_raw.shape[-2], x_star_raw.shape[-1]
     cylinder_mask = build_cylinder_mask(H, W, center=(100.0, 100.0), radius=12.5)
     inflow_profile = build_inflow_profile(H, W, U=1.0)
     cond = torch.stack([cylinder_mask, inflow_profile], dim=0).unsqueeze(0).cuda()
@@ -202,20 +215,55 @@ def sparse_reconstruction(
     plt.close(fig)
     print(f"  Saved: {output_dir / 'sparse_ground_truth.png'}")
 
-    # 各subsampleレートで再構成（正規化空間で）
+    # 各subsampleレートで再構成（score.kernel + flattened shape）
     print(f"\nReconstructing with subsample rates: {subsample_rates}")
-    results = reconstruct_sparse(
-        x_star_norm,  # 正規化済みデータを渡す
-        score,
-        cond,
-        subsample_rates=subsample_rates,
-        noise_std=0.1,
-        steps=256,
-        corrections=1,
-        tau=0.5,
-    )
+    import math
+    noise_std = 0.1
+    steps = 256
 
-    for sub, x_recon_norm in results.items():
+    # 観測点数スケーリングの基準: sub=4
+    # IBPMはKolmogorovの約40倍の観測点を持つため、stdを調整して勾配バランスを揃える
+    # 詳細: experiments/ibpm/sparse_reconstruction_analysis.md
+    n_obs_ref = (H // 4) * (W // 4) * T * C
+
+    for sub in subsample_rates:
+        # 観測点数に応じたstdスケーリング
+        n_obs = (H // sub) * (W // sub) * T * C
+        std_scaled = noise_std * math.sqrt(n_obs / n_obs_ref)
+        print(f"  subsample={sub:2d} (std={std_scaled:.4f})...", end=" ", flush=True)
+
+        # 空間サブサンプリング演算子
+        def A(x, s=sub):
+            return x[..., ::s, ::s]
+
+        # 観測（flattened形式）- ノイズはオリジナルのstdで生成
+        y_star = torch.normal(A(x_star_flat), noise_std)
+
+        # score.kernelを使用（学習時と同じ）
+        # GaussianScoreにはスケーリングされたstdを渡す
+        sde = VPSDE(
+            GaussianScore(
+                y_star,
+                A=A,
+                std=std_scaled,
+                sde=VPSDE(score.kernel, shape=(), eta=0.01),
+            ),
+            shape=x_star_flat.shape,  # (32, H, W) flattened
+            eta=0.01,
+        ).cuda()
+
+        # サンプリング
+        x_recon_flat = sde.sample(
+            torch.Size([1]),
+            c=cond,
+            steps=steps,
+            corrections=1,
+            tau=0.5,
+        ).cpu()[0]
+
+        # Unflatten して (T, C, H, W) に戻す
+        x_recon_norm = x_recon_flat.unflatten(0, (T, C))
+
         # 逆正規化して可視化
         x_recon = normalizer.denormalize(x_recon_norm)
 
@@ -227,8 +275,7 @@ def sparse_reconstruction(
             save_path=output_dir / f'sparse_sub{sub}_reconstructed.png',
         )
         plt.close(fig)
-
-        print(f"  subsample={sub:2d}: Saved: {output_dir / f'sparse_sub{sub}_reconstructed.png'}")
+        print(f"Saved")
 
 
 def diffusion_trajectory(
@@ -247,7 +294,7 @@ def diffusion_trajectory(
 
     train_data = load_ibpm_data(data_path, split='train')
     H, W = train_data.shape[-2], train_data.shape[-1]
-    window = config.get('window', 5)
+    window = config.get('window', 16)
     shape_flat = torch.Size((window * 2, H, W))
 
     # 幾何条件
@@ -539,7 +586,7 @@ def debug_model(
 
     train_data = load_ibpm_data(data_path, split='train')
     H, W = train_data.shape[-2], train_data.shape[-1]
-    window = config.get('window', 5)
+    window = config.get('window', 16)
 
     # 幾何条件
     cylinder_mask = build_cylinder_mask(H, W, center=(100.0, 100.0), radius=12.5)
@@ -641,8 +688,8 @@ def main():
             unconditional_sample(score, config, args.data_path, output_dirs['sample'], n_samples=4)
 
     if args.mode == 'all' or args.mode == 'sparse':
-        if score is not None:
-            sparse_reconstruction(score, args.data_path, output_dirs['sparse'])
+        if score is not None and config is not None:
+            sparse_reconstruction(score, config, args.data_path, output_dirs['sparse'])
 
     if args.mode == 'all' or args.mode == 'trajectory':
         if score is not None and config is not None:
