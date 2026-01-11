@@ -222,17 +222,20 @@ def sparse_reconstruction(
     noise_std = 0.1
     steps = 256
 
-    # 観測点数スケーリングの基準: sub=4
-    # DPSでは尤度勾配が事前スコアを~240倍圧倒する必要がある（Likelihood Dominance）
-    # stdスケーリングで観測点数が変わっても同じ比率を維持
-    # 詳細: docs/ibpm/gaussian_score_scaling_issue.md section 7
+    # Dual Scaling: std と gamma の両方をスケーリング
+    # gamma項 γ(σ/μ)² が t > 0.1 で支配的になるため、stdだけでは不十分
+    # 詳細: docs/ibpm/gaussian_score_scaling_issue.md section 8
     n_obs_ref = (H // 4) * (W // 4) * T * C
+    gamma_base = 0.01  # GaussianScore のデフォルト値
 
     for sub in subsample_rates:
-        # 観測点数に応じたstdスケーリング
         n_obs = (H // sub) * (W // sub) * T * C
-        std_scaled = noise_std * math.sqrt(n_obs / n_obs_ref)
-        print(f"  subsample={sub:2d} (std={std_scaled:.4f})...", end=" ", flush=True)
+        ratio = n_obs / n_obs_ref
+
+        # Dual Scaling: 全時刻で勾配比率を一定に保つ
+        std_scaled = noise_std * math.sqrt(ratio)
+        gamma_scaled = gamma_base * ratio
+        print(f"  subsample={sub:2d} (std={std_scaled:.4f}, gamma={gamma_scaled:.4f})...", end=" ", flush=True)
 
         # 空間サブサンプリング演算子
         def A(x, s=sub):
@@ -242,12 +245,13 @@ def sparse_reconstruction(
         y_star = torch.normal(A(x_star_flat), noise_std)
 
         # score.kernelを使用（学習時と同じ）
-        # GaussianScoreにはスケーリングされたstdを渡す（尤度/事前比率を一定に保つ）
+        # Dual Scaling: std と gamma の両方をスケーリング
         sde = VPSDE(
             GaussianScore(
                 y_star,
                 A=A,
                 std=std_scaled,
+                gamma=gamma_scaled,
                 sde=VPSDE(score.kernel, shape=(), eta=0.01),
             ),
             shape=x_star_flat.shape,  # (32, H, W) flattened
