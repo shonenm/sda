@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import os
 import seaborn
 
+import numpy as np
 from numpy.typing import ArrayLike
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageOps
