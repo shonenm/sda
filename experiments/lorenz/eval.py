@@ -10,25 +10,24 @@ Lorenz 63システムのデータ同化評価スクリプト
 - Earth Mover's Distance (EMD) による精度評価
 """
 
+from typing import *
+
 import h5py
 import numpy as np
-
-from dawgz import job, after, context, ensure, schedule
-from typing import *
+from dawgz import after, context, ensure, job, schedule
+from utils import *
 
 from sda.mcs import *
 from sda.paths import get_results_dir
 from sda.score import *
 from sda.utils import *
 
-from utils import *
-
 # 結果ディレクトリ（lorenz実験用）
-RESULTS_DIR = get_results_dir('lorenz')
+RESULTS_DIR = get_results_dir("lorenz")
 
 
-@ensure(lambda: (RESULTS_DIR / 'obs.h5').exists())
-@job(cpus=1, ram='1GB', time='00:05:00')
+@ensure(lambda: (RESULTS_DIR / "obs.h5").exists())
+@job(cpus=1, ram="1GB", time="00:05:00")
 def observations():
     """合成観測データの生成
 
@@ -36,17 +35,17 @@ def observations():
     - lo: 低頻度（8ステップごと）、低ノイズ（σ=0.05）、x座標のみ観測
     - hi: 高頻度（全時刻）、高ノイズ（σ=0.25）、x座標のみ観測
     """
-    with h5py.File(PATH / 'data/test.h5', mode='r') as f:
-        x = f['x'][:, :65]  # 最初の65時刻を使用
+    with h5py.File(PATH / "data/test.h5", mode="r") as f:
+        x = f["x"][:, :65]  # 最初の65時刻を使用
 
     # 低頻度・低ノイズ観測（8ステップごと、σ=0.05）
     y_lo = np.random.normal(x[:, ::8, :1], 0.05)
     # 高頻度・高ノイズ観測（全時刻、σ=0.25）
     y_hi = np.random.normal(x[:, :, :1], 0.25)
 
-    with h5py.File(RESULTS_DIR / 'obs.h5', mode='w') as f:
-        f.create_dataset('lo', data=y_lo)
-        f.create_dataset('hi', data=y_hi)
+    with h5py.File(RESULTS_DIR / "obs.h5", mode="w") as f:
+        f.create_dataset("lo", data=y_lo)
+        f.create_dataset("hi", data=y_hi)
 
 
 jobs = []
@@ -54,17 +53,18 @@ jobs = []
 # 評価対象のモデルリスト（異なるorder kのモデル）
 # k: 時間窓のorder（前後k時刻を考慮）
 for name, local in [
-    ('polar-capybara-13_y1g6w4jm', True),  # k=1 (window=3)
-    ('snowy-leaf-29_711r6as1', True),      # k=2 (window=5)
-    ('ruby-serenity-42_nbhxlnf9', True),   # k=3 (window=7)
-    ('light-moon-51_09a36gw8', True),      # k=4 (window=9)
-    ('lilac-bush-61_7f0sioiw', False),     # k≈8 (グローバルモデル、window=32)
+    ("polar-capybara-13_y1g6w4jm", True),  # k=1 (window=3)
+    ("snowy-leaf-29_711r6as1", True),  # k=2 (window=5)
+    ("ruby-serenity-42_nbhxlnf9", True),  # k=3 (window=7)
+    ("light-moon-51_09a36gw8", True),  # k=4 (window=9)
+    ("lilac-bush-61_7f0sioiw", False),  # k≈8 (グローバルモデル、window=32)
 ]:
     # 2種類の観測シナリオで評価
-    for freq in ['lo', 'hi']:
+    for freq in ["lo", "hi"]:
+
         @after(observations)
         @context(name=name, local=local, freq=freq)
-        @job(name=f'{name}_{freq}', array=64, cpus=2, gpus=1, ram='8GB', time='01:00:00')
+        @job(name=f"{name}_{freq}", array=64, cpus=2, gpus=1, ram="8GB", time="01:00:00")
         def evaluation(i: int):
             """データ同化性能の評価ジョブ
 
@@ -79,16 +79,16 @@ for name, local in [
             chain = make_chain()
 
             # 観測データの読み込み
-            with h5py.File(RESULTS_DIR / 'obs.h5', mode='r') as f:
+            with h5py.File(RESULTS_DIR / "obs.h5", mode="r") as f:
                 y = torch.from_numpy(f[freq][i])
 
             # 観測演算子: 状態からx座標のみを抽出
             A = lambda x: chain.preprocess(x)[..., :1]
 
             # 観測シナリオのパラメータ
-            if freq == 'lo':  # 低頻度・低ノイズ
+            if freq == "lo":  # 低頻度・低ノイズ
                 sigma, step = 0.05, 8
-            else:             # 高頻度・高ノイズ
+            else:  # 高頻度・高ノイズ
                 sigma, step = 0.25, 1
 
             # 真の事後分布（粒子フィルタで推定、ベースライン）
@@ -102,21 +102,21 @@ for name, local in [
             w1 = emd(x, x_).item()  # 推定の安定性（2回の推定間のEMD）
 
             # 結果をCSVに記録
-            with open(RESULTS_DIR / f'stats_{freq}.csv', mode='a') as f:
-                f.write(f'{i},ground-truth,,{log_px},{log_py},{w1}\n')
+            with open(RESULTS_DIR / f"stats_{freq}.csv", mode="a") as f:
+                f.write(f"{i},ground-truth,,{log_px},{log_py},{w1}\n")
 
-            print('GT:', log_px, log_py, w1, flush=True)
+            print("GT:", log_px, log_py, w1, flush=True)
 
             # スコアモデルによる事後分布推定
-            score = load_score(PATH / f'runs/lorenz/{name}/state.pth', local=local)
+            score = load_score(PATH / f"runs/lorenz/{name}/state.pth", local=local)
             # ガウス尤度でスコアを条件付ける
             sde = VPSDE(
                 GaussianScore(
-                    y=y,                        # 観測データ
+                    y=y,  # 観測データ
                     A=lambda x: x[..., ::step, :1],  # 観測演算子
-                    std=sigma,                  # 観測ノイズ
+                    std=sigma,  # 観測ノイズ
                     sde=VPSDE(score, shape=()),  # 事前分布のスコア
-                    gamma=3e-2,                 # 尤度の重み
+                    gamma=3e-2,  # 尤度の重み
                 ),
                 shape=(65, 3),  # 65時刻 × 3次元状態
             ).cuda()
@@ -133,23 +133,23 @@ for name, local in [
                 w1 = emd(x, x_).item()  # 真の事後分布（粒子フィルタ）とのEMD
 
                 # 結果をCSVに記録
-                with open(RESULTS_DIR / f'stats_{freq}.csv', mode='a') as f:
-                    f.write(f'{i},{name},{C},{log_px},{log_py},{w1}\n')
+                with open(RESULTS_DIR / f"stats_{freq}.csv", mode="a") as f:
+                    f.write(f"{i},{name},{C},{log_px},{log_py},{w1}\n")
 
-                print(f'{C:02d}:', log_px, log_py, w1, flush=True)
+                print(f"{C:02d}:", log_px, log_py, w1, flush=True)
 
         jobs.append(evaluation)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # 結果ディレクトリは get_results_dir() で自動作成済み
 
     # SLURMバックエンドで全評価ジョブをスケジュール
     # 5モデル × 2観測シナリオ × 64データ = 640ジョブ
     schedule(
         *jobs,
-        name='Evaluation',
-        backend='slurm',
-        prune=True,   # 既に完了したジョブはスキップ
-        export='ALL', # すべての環境変数をエクスポート
+        name="Evaluation",
+        backend="slurm",
+        prune=True,  # 既に完了したジョブはスキップ
+        export="ALL",  # すべての環境変数をエクスポート
     )

@@ -7,19 +7,19 @@ Lorenz 63システムの訓練データ生成スクリプト
 訓練/検証/テストデータに分割してHDF5形式で保存
 """
 
-import h5py
-
-from dawgz import job, after, schedule
 from typing import *
 
-from sda.paths import get_data_dir
+import h5py
+from dawgz import job, schedule
 from utils import *
 
+from sda.paths import get_data_dir
+
 # データディレクトリ（lorenz実験用）
-DATA_DIR = get_data_dir('lorenz')
+DATA_DIR = get_data_dir("lorenz")
 
 
-@job(cpus=1, ram='1GB', time='00:05:00')
+@job(cpus=1, ram="1GB", time="00:05:00")
 def simulate():
     """Lorenz 63システムの軌道をシミュレート
 
@@ -44,25 +44,25 @@ def simulate():
     j = int(0.9 * len(x))  # 922時刻
 
     splits = {
-        'train': x[:i],
-        'valid': x[i:j],
-        'test': x[j:],
+        "train": x[:i],
+        "valid": x[i:j],
+        "test": x[j:],
     }
 
     # HDF5形式で保存
     for name, x in splits.items():
-        with h5py.File(DATA_DIR / f'{name}.h5', mode='w') as f:
-            f.create_dataset('x', data=x, dtype=np.float32)
+        with h5py.File(DATA_DIR / f"{name}.h5", mode="w") as f:
+            f.create_dataset("x", data=x, dtype=np.float32)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # データディレクトリの作成
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     # SLURMバックエンドでジョブをスケジュール（単一ジョブ、5分）
     schedule(
         simulate,
-        name='Data generation',
-        backend='slurm',
-        export='ALL',  # すべての環境変数をエクスポート
+        name="Data generation",
+        backend="slurm",
+        export="ALL",  # すべての環境変数をエクスポート
     )

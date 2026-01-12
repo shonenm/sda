@@ -11,51 +11,49 @@ Immersed Boundary Projection Method (IBPM)で計算されたRe=100の円柱周�
 - reflect padding（非周期境界条件）
 """
 
+# データパス設定
+import os
+from pathlib import Path
+
 import torch
 import wandb
-
 from dawgz import job, schedule
-from pathlib import Path
 from torch.utils.data import DataLoader
 from tqdm import trange
 
+# Import from experiments.ibpm.utils with absolute path
+from experiments.ibpm.utils import PATH, make_score
 from sda.data import IBPMDataset
 from sda.score import VPSDE
 from sda.utils import save_config, slack_on_complete
 
-# Import from experiments.ibpm.utils with absolute path
-from experiments.ibpm.utils import make_score, PATH
-
-
-# データパス設定
-import os
-if 'SCRATCH' in os.environ:
-    DATA_PATH = Path(os.environ['SCRATCH']) / 'sda/ibpm'
+if "SCRATCH" in os.environ:
+    DATA_PATH = Path(os.environ["SCRATCH"]) / "sda/ibpm"
 else:
-    DATA_PATH = Path('/home/devuser/fluid-sbi/data/ibpm_h5_400x200')
+    DATA_PATH = Path("/home/devuser/fluid-sbi/data/ibpm_h5_400x200")
 
 # 学習設定
 # IBPM円柱流れ（399×199グリッド）の時系列を処理
 CONFIG = {
     # アーキテクチャ
-    'window': 16,                         # 時間窓のサイズ（データセットに合わせる）
-    'cond_channels': 2,                   # 条件チャネル数（mask + inflow）
-    'embedding': 64,                      # 時刻埋め込みの次元数
-    'hidden_channels': (64, 128, 256),    # U-Netの各深さでのチャネル数
-    'hidden_blocks': (2, 2, 2),           # 各深さでの残差ブロック数
-    'kernel_size': 3,                     # 畳み込みカーネルのサイズ
-    'activation': 'SiLU',                 # 活性化関数
+    "window": 16,  # 時間窓のサイズ（データセットに合わせる）
+    "cond_channels": 2,  # 条件チャネル数（mask + inflow）
+    "embedding": 64,  # 時刻埋め込みの次元数
+    "hidden_channels": (64, 128, 256),  # U-Netの各深さでのチャネル数
+    "hidden_blocks": (2, 2, 2),  # 各深さでの残差ブロック数
+    "kernel_size": 3,  # 畳み込みカーネルのサイズ
+    "activation": "SiLU",  # 活性化関数
     # 学習設定
-    'epochs': 2000,                       # エポック数（大規模学習）
-    'batch_size': 2,                      # バッチサイズ（高解像度のためメモリ節約）
-    'optimizer': 'AdamW',                 # オプティマイザ
-    'learning_rate': 1e-4,                # 学習率
-    'weight_decay': 1e-3,                 # 重み減衰
-    'scheduler': 'cosine',                # 学習率スケジューラ（長時間学習向け）
+    "epochs": 2000,  # エポック数（大規模学習）
+    "batch_size": 2,  # バッチサイズ（高解像度のためメモリ節約）
+    "optimizer": "AdamW",  # オプティマイザ
+    "learning_rate": 1e-4,  # 学習率
+    "weight_decay": 1e-3,  # 重み減衰
+    "scheduler": "cosine",  # 学習率スケジューラ（長時間学習向け）
 }
 
 
-@job(array=1, cpus=4, gpus=1, ram='16GB', time='72:00:00')
+@job(array=1, cpus=4, gpus=1, ram="16GB", time="72:00:00")
 @slack_on_complete(success_msg="🎉 IBPM Training completed!")
 def train(i: int):
     """IBPM円柱流れモデルの学習ジョブ
@@ -69,34 +67,34 @@ def train(i: int):
     import math
 
     # WandB実行名を生成
-    lr = CONFIG['learning_rate']
-    bs = CONFIG['batch_size']
-    wd = CONFIG['weight_decay']
-    window = CONFIG['window']
+    lr = CONFIG["learning_rate"]
+    bs = CONFIG["batch_size"]
+    wd = CONFIG["weight_decay"]
+    window = CONFIG["window"]
     run_name = f"ibpm_vpsde_w{window}_lr{lr:.0e}_bs{bs}_wd{wd:.0e}_seed{i}"
 
     # WandBで実験管理
     run = wandb.init(
-        project='sda-ibpm',
+        project="sda-ibpm",
         name=run_name,
-        group='ibpm_cylinder_vpsde',
-        tags=['ibpm', 'cylinder', 'vpsde', f'seed{i}', f'lr{lr:.0e}'],
-        notes=f'IBPM with VPSDE (Kolmogorov-style), run {i+1}',
+        group="ibpm_cylinder_vpsde",
+        tags=["ibpm", "cylinder", "vpsde", f"seed{i}", f"lr{lr:.0e}"],
+        notes=f"IBPM with VPSDE (Kolmogorov-style), run {i + 1}",
         config=CONFIG,
     )
-    runpath = PATH / f'runs/ibpm/{run.name}_{run.id}'
+    runpath = PATH / f"runs/ibpm/{run.name}_{run.id}"
     runpath.mkdir(parents=True, exist_ok=True)
 
     save_config(CONFIG, runpath)
 
     # データセットの準備
     train_dataset = IBPMDataset(
-        DATA_PATH / 'train.h5',
+        DATA_PATH / "train.h5",
         time_window=window,
         use_sdf=False,  # 2チャネル（mask + inflow）
     )
     valid_dataset = IBPMDataset(
-        DATA_PATH / 'valid.h5',
+        DATA_PATH / "valid.h5",
         time_window=window,
         use_sdf=False,
     )
@@ -137,10 +135,10 @@ def train(i: int):
     )
 
     # スケジューラ（線形減衰）
-    epochs = CONFIG['epochs']
-    if CONFIG['scheduler'] == 'linear':
+    epochs = CONFIG["epochs"]
+    if CONFIG["scheduler"] == "linear":
         lr_lambda = lambda t: 1 - (t / epochs)
-    elif CONFIG['scheduler'] == 'cosine':
+    elif CONFIG["scheduler"] == "cosine":
         lr_lambda = lambda t: (1 + math.cos(math.pi * t / epochs)) / 2
     else:
         lr_lambda = lambda t: 1.0
@@ -182,15 +180,17 @@ def train(i: int):
         # 統計情報
         loss_train = torch.stack(losses_train).mean().item()
         loss_valid = torch.stack(losses_valid).mean().item()
-        current_lr = optimizer.param_groups[0]['lr']
+        current_lr = optimizer.param_groups[0]["lr"]
 
         # WandBにログ
-        run.log({
-            'epoch': epoch + 1,
-            'loss_train': loss_train,
-            'loss_valid': loss_valid,
-            'lr': current_lr,
-        })
+        run.log(
+            {
+                "epoch": epoch + 1,
+                "loss_train": loss_train,
+                "loss_valid": loss_valid,
+                "lr": current_lr,
+            }
+        )
 
         # プログレスバーに表示
         bar.set_postfix(lt=loss_train, lv=loss_valid, lr=current_lr)
@@ -202,32 +202,33 @@ def train(i: int):
         if (epoch + 1) % 50 == 0:
             torch.save(
                 score_net.state_dict(),
-                runpath / f'state_epoch{epoch+1}.pth',
+                runpath / f"state_epoch{epoch + 1}.pth",
             )
 
     # 最終モデルの保存
     torch.save(
         score_net.state_dict(),
-        runpath / 'state_final.pth',
+        runpath / "state_final.pth",
     )
 
     run.finish()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     import os
+
     from sda.utils import load_env_for_slurm
 
     # .envから環境変数を読み込んでSLURM用にexport文を生成
-    env_exports = load_env_for_slurm(['SLACK_WEBHOOK_URL', 'WANDB_API_KEY'])
-    env_exports.append('export WANDB_SILENT=true')
+    env_exports = load_env_for_slurm(["SLACK_WEBHOOK_URL", "WANDB_API_KEY"])
+    env_exports.append("export WANDB_SILENT=true")
 
     # SLURMバックエンドでジョブをスケジュール
     schedule(
-        train, # type: ignore
-        name='IBPM_Training',
-        backend='slurm',
-        export='ALL',
-        interpreter='/home/devuser/fluid-sbi/sda/.venv/bin/python',
+        train,  # type: ignore
+        name="IBPM_Training",
+        backend="slurm",
+        export="ALL",
+        interpreter="/home/devuser/fluid-sbi/sda/.venv/bin/python",
         env=env_exports,
     )

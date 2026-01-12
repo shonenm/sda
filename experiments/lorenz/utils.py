@@ -7,17 +7,15 @@ Lorenz 63システム実験のためのユーティリティ関数群
 """
 
 import os
-
 from pathlib import Path
 from typing import *
 
 from sda.mcs import *
-from sda.score import *
-from sda.utils import *
-
 
 # パス設定を一元管理モジュールからインポート
 from sda.paths import get_project_root
+from sda.score import *
+from sda.utils import *
 
 PATH = get_project_root()
 
@@ -36,7 +34,7 @@ def make_global_score(
     embedding: int = 32,
     hidden_channels: Sequence[int] = (64,),
     hidden_blocks: Sequence[int] = (3,),
-    activation: str = 'SiLU',
+    activation: str = "SiLU",
     **absorb,
 ) -> nn.Module:
     """グローバルスコアネットワークを構築
@@ -56,12 +54,12 @@ def make_global_score(
     """
     return MCScoreWrapper(
         ScoreUNet(
-            channels=3,              # Lorenzシステムの3次元状態 (x, y, z)
+            channels=3,  # Lorenzシステムの3次元状態 (x, y, z)
             embedding=embedding,
             hidden_channels=hidden_channels,
             hidden_blocks=hidden_blocks,
             activation=ACTIVATIONS[activation],
-            spatial=1,               # 1次元時系列データ（時間軸のみ）
+            spatial=1,  # 1次元時系列データ（時間軸のみ）
         )
     )
 
@@ -71,7 +69,7 @@ def make_local_score(
     embedding: int = 32,
     width: int = 128,
     depth: int = 5,
-    activation: str = 'SiLU',
+    activation: str = "SiLU",
     **absorb,
 ) -> nn.Module:
     """ローカルスコアネットワークを構築
@@ -91,10 +89,10 @@ def make_local_score(
         MCScoreNet: 局所的な時間窓を処理するスコアネットワーク
     """
     return MCScoreNet(
-        features=3,                      # Lorenzシステムの3次元状態
-        order=window // 2,               # 前後何ステップ見るか
+        features=3,  # Lorenzシステムの3次元状態
+        order=window // 2,  # 前後何ステップ見るか
         embedding=embedding,
-        hidden_features=[width] * depth, # 全隠れ層で同じ幅を使用
+        hidden_features=[width] * depth,  # 全隠れ層で同じ幅を使用
         activation=ACTIVATIONS[activation],
     )
 
@@ -102,7 +100,7 @@ def make_local_score(
 def load_score(
     file: Path,
     local: bool = False,
-    device: str = 'cpu',
+    device: str = "cpu",
     **kwargs,
 ) -> nn.Module:
     """学習済みスコアネットワークをロード
@@ -253,9 +251,8 @@ def weak_4d_var(
     def closure():
         optimizer.zero_grad()
         # J = ||x[0] - x_b||^2 - log p(x) - log p(y|x)
-        loss = (x[0] - x_b).square().sum() \
-               - log_prior(x) \              # モデルとの整合性
-               - log_likelihood(y, x, A, sigma, step)  # 観測との整合性
+        # モデルとの整合性 + 観測との整合性
+        loss = (x[0] - x_b).square().sum() - log_prior(x) - log_likelihood(y, x, A, sigma, step)
         loss.backward()
         return loss
 

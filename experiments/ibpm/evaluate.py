@@ -10,25 +10,24 @@ Usage:
 """
 
 import argparse
-import matplotlib
-matplotlib.use('Agg')  # non-interactive backend
-import matplotlib.pyplot as plt
-import torch
 
+import matplotlib
+
+matplotlib.use("Agg")  # non-interactive backend
 from pathlib import Path
 
-from sda.data.ibpm_dataset import build_cylinder_mask, build_inflow_profile, IBPMDataset, IBPMNormalizer
-from sda.paths import get_results_dir
-from sda.score import VPSDE
+import matplotlib.pyplot as plt
+import torch
 
 from experiments.ibpm.utils import (
     compute_vorticity,
     load_ibpm_data,
     load_trained_model,
     plot_velocity_and_vorticity,
-    plot_vorticity,
-    reconstruct_sparse,
 )
+from sda.data.ibpm_dataset import IBPMDataset, IBPMNormalizer, build_cylinder_mask, build_inflow_profile
+from sda.paths import get_results_dir
+from sda.score import VPSDE
 
 
 def visualize_data(data_path: Path, output_dir: Path) -> None:
@@ -38,22 +37,22 @@ def visualize_data(data_path: Path, output_dir: Path) -> None:
     print("=" * 60)
 
     # Train data
-    train_data = load_ibpm_data(data_path, split='train')
+    train_data = load_ibpm_data(data_path, split="train")
     print(f"Train data shape: {train_data.shape}")
     print(f"  Samples: {train_data.shape[0]}, Timesteps: {train_data.shape[1]}")
     print(f"  Resolution: {train_data.shape[3]}x{train_data.shape[4]}")
     print(f"  Range: [{train_data.min():.3f}, {train_data.max():.3f}]")
 
     # 複数サンプルのt=0を可視化（u, v, 渦度の3行）
-    sample_indices = [0, 10, 20, 30, 40, min(41, train_data.shape[0]-1)]
+    sample_indices = [0, 10, 20, 30, 40, min(41, train_data.shape[0] - 1)]
     frames = [train_data[i, 0] for i in sample_indices if i < train_data.shape[0]]
     x_train = torch.stack(frames)
 
     fig = plot_velocity_and_vorticity(
         x_train,
-        title='Train Data: Different samples at t=0',
+        title="Train Data: Different samples at t=0",
         figsize=(20, 9),
-        save_path=output_dir / 'data_train_samples.png',
+        save_path=output_dir / "data_train_samples.png",
     )
     plt.close(fig)
     print(f"  Saved: {output_dir / 'data_train_samples.png'}")
@@ -63,36 +62,36 @@ def visualize_data(data_path: Path, output_dir: Path) -> None:
     v_train = train_data[:, :, 1].flatten()
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    axes[0].hist(u_train.numpy(), bins=100, alpha=0.7, color='blue')
-    axes[0].set_xlabel('u velocity')
-    axes[0].set_ylabel('Count')
-    axes[0].set_title(f'u distribution (mean={u_train.mean():.3f}, std={u_train.std():.3f})')
+    axes[0].hist(u_train.numpy(), bins=100, alpha=0.7, color="blue")
+    axes[0].set_xlabel("u velocity")
+    axes[0].set_ylabel("Count")
+    axes[0].set_title(f"u distribution (mean={u_train.mean():.3f}, std={u_train.std():.3f})")
     axes[0].grid(alpha=0.3)
 
-    axes[1].hist(v_train.numpy(), bins=100, alpha=0.7, color='red')
-    axes[1].set_xlabel('v velocity')
-    axes[1].set_ylabel('Count')
-    axes[1].set_title(f'v distribution (mean={v_train.mean():.3f}, std={v_train.std():.3f})')
+    axes[1].hist(v_train.numpy(), bins=100, alpha=0.7, color="red")
+    axes[1].set_xlabel("v velocity")
+    axes[1].set_ylabel("Count")
+    axes[1].set_title(f"v distribution (mean={v_train.mean():.3f}, std={v_train.std():.3f})")
     axes[1].grid(alpha=0.3)
 
     plt.tight_layout()
-    fig.savefig(output_dir / 'data_velocity_stats.png', dpi=150, bbox_inches='tight')
+    fig.savefig(output_dir / "data_velocity_stats.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {output_dir / 'data_velocity_stats.png'}")
 
     # Test data
-    test_path = data_path / 'test.h5'
+    test_path = data_path / "test.h5"
     if test_path.exists():
-        test_data = load_ibpm_data(data_path, split='test')
+        test_data = load_ibpm_data(data_path, split="test")
         print(f"\nTest data shape: {test_data.shape}")
 
         for idx in range(min(3, test_data.shape[0])):
             x_test = test_data[idx, :8]
             fig = plot_velocity_and_vorticity(
                 x_test,
-                title=f'Test Sample {idx}: Velocity and Vorticity Evolution',
+                title=f"Test Sample {idx}: Velocity and Vorticity Evolution",
                 figsize=(20, 9),
-                save_path=output_dir / f'data_test_sample_{idx}.png',
+                save_path=output_dir / f"data_test_sample_{idx}.png",
             )
             plt.close(fig)
             print(f"  Saved: {output_dir / f'data_test_sample_{idx}.png'}")
@@ -114,8 +113,8 @@ def unconditional_sample(
     normalizer = IBPMNormalizer()
 
     # データセットから条件と形状を取得（正規化済み）
-    window = config.get('window', 16)
-    ds = IBPMDataset(str(data_path / 'train.h5'), time_window=window, normalize=True)
+    window = config.get("window", 16)
+    ds = IBPMDataset(str(data_path / "train.h5"), time_window=window, normalize=True)
     x_sample, c_sample, _ = ds[0]
 
     H, W = x_sample.shape[-2], x_sample.shape[-1]
@@ -132,11 +131,11 @@ def unconditional_sample(
     sde = VPSDE(score.kernel, shape=shape_flat, eta=0.01).cuda()
 
     # 訓練データの統計（比較用）
-    train_data = load_ibpm_data(data_path, split='train')
+    train_data = load_ibpm_data(data_path, split="train")
     train_ref = train_data[0, :T]  # 参照用
 
     for i in range(n_samples):
-        print(f"  Generating sample {i+1}/{n_samples}...")
+        print(f"  Generating sample {i + 1}/{n_samples}...")
         x_sampled = sde.sample(torch.Size([1]), c=c_batch, steps=256, corrections=1).cpu()
         x_vis = x_sampled[0].unflatten(0, (T, C))
 
@@ -146,20 +145,20 @@ def unconditional_sample(
         # u, v, 渦度の3行でプロット
         fig = plot_velocity_and_vorticity(
             x_vis_denorm,
-            title=f'Unconditional Sample {i+1}',
+            title=f"Unconditional Sample {i + 1}",
             figsize=(20, 9),
-            save_path=output_dir / f'sample_uncond_{i+1}.png',
+            save_path=output_dir / f"sample_uncond_{i + 1}.png",
         )
         plt.close(fig)
-        print(f"    Saved: {output_dir / f'sample_uncond_{i+1}.png'}")
+        print(f"    Saved: {output_dir / f'sample_uncond_{i + 1}.png'}")
 
         # 速度の統計表示
         u_mean, u_std = x_vis_denorm[:, 0].mean().item(), x_vis_denorm[:, 0].std().item()
         v_mean, v_std = x_vis_denorm[:, 1].mean().item(), x_vis_denorm[:, 1].std().item()
-        print(f"    Sample {i+1} stats: u(mean={u_mean:.4f}, std={u_std:.4f}), v(mean={v_mean:.4f}, std={v_std:.4f})")
+        print(f"    Sample {i + 1} stats: u(mean={u_mean:.4f}, std={u_std:.4f}), v(mean={v_mean:.4f}, std={v_std:.4f})")
 
     # 訓練データとの統計比較
-    print(f"\n  Train data stats (reference):")
+    print("\n  Train data stats (reference):")
     print(f"    u: mean={train_ref[:, 0].mean():.4f}, std={train_ref[:, 0].std():.4f}")
     print(f"    v: mean={train_ref[:, 1].mean():.4f}, std={train_ref[:, 1].std():.4f}")
 
@@ -185,10 +184,10 @@ def sparse_reconstruction(
     normalizer = IBPMNormalizer()
 
     # windowサイズ（学習時と同じtimesteps数を使用）
-    window = config.get('window', 16)
+    window = config.get("window", 16)
 
     # テストデータをロード（生データ）
-    test_data = load_ibpm_data(data_path, split='test')
+    test_data = load_ibpm_data(data_path, split="test")
     n_timesteps = min(window, test_data.shape[1])
     x_star_raw = test_data[0, :n_timesteps]  # (T, C, H, W) = (16, 2, H, W)
     T, C, H, W = x_star_raw.shape
@@ -200,7 +199,9 @@ def sparse_reconstruction(
     # Flatten（学習時と同じ形式: (T*C, H, W) = (32, H, W)）
     x_star_flat = x_star_norm.flatten(0, 1)
     print(f"Flattened shape: {x_star_flat.shape}")
-    print(f"Ground truth 値範囲: raw=[{x_star_raw.min():.2f}, {x_star_raw.max():.2f}], norm=[{x_star_norm.min():.2f}, {x_star_norm.max():.2f}]")
+    print(
+        f"Ground truth 値範囲: raw=[{x_star_raw.min():.2f}, {x_star_raw.max():.2f}], norm=[{x_star_norm.min():.2f}, {x_star_norm.max():.2f}]"
+    )
 
     # 幾何条件を生成
     cylinder_mask = build_cylinder_mask(H, W, center=(100.0, 100.0), radius=12.5)
@@ -210,16 +211,15 @@ def sparse_reconstruction(
     # Ground truth 可視化（生データで、u, v, 渦度の3行）
     fig = plot_velocity_and_vorticity(
         x_star_raw,
-        title='Ground Truth: Velocity and Vorticity',
+        title="Ground Truth: Velocity and Vorticity",
         figsize=(20, 9),
-        save_path=output_dir / 'sparse_ground_truth.png',
+        save_path=output_dir / "sparse_ground_truth.png",
     )
     plt.close(fig)
     print(f"  Saved: {output_dir / 'sparse_ground_truth.png'}")
 
     # 各subsampleレートで再構成（score.kernel + flattened shape）
     print(f"\nReconstructing with subsample rates: {subsample_rates}")
-    import math
     steps = 256
 
     # === Clamped Linear Scaling ===
@@ -244,13 +244,17 @@ def sparse_reconstruction(
 
         # Clamped Linear Scaling: Linear Scalingに最小値フロアを設定
         raw_std = BASE_STD * ratio
-        raw_gamma = BASE_GAMMA * (ratio ** 2)
+        raw_gamma = BASE_GAMMA * (ratio**2)
         std_scaled = max(raw_std, MIN_STD)
         gamma_scaled = max(raw_gamma, MIN_GAMMA)
 
         clamped_std = " (clamped)" if raw_std < MIN_STD else ""
         clamped_gamma = " (clamped)" if raw_gamma < MIN_GAMMA else ""
-        print(f"  subsample={sub:2d} (std={std_scaled:.4f}{clamped_std}, gamma={gamma_scaled:.6f}{clamped_gamma})...", end=" ", flush=True)
+        print(
+            f"  subsample={sub:2d} (std={std_scaled:.4f}{clamped_std}, gamma={gamma_scaled:.6f}{clamped_gamma})...",
+            end=" ",
+            flush=True,
+        )
 
         # 空間サブサンプリング演算子
         def A(x, s=sub):
@@ -310,12 +314,12 @@ def sparse_reconstruction(
         # u, v, 渦度の3行でプロット
         fig = plot_velocity_and_vorticity(
             x_recon,
-            title=f'Reconstructed (subsample={sub})',
+            title=f"Reconstructed (subsample={sub})",
             figsize=(20, 9),
-            save_path=output_dir / f'sparse_sub{sub}_reconstructed.png',
+            save_path=output_dir / f"sparse_sub{sub}_reconstructed.png",
         )
         plt.close(fig)
-        print(f"Saved")
+        print("Saved")
 
 
 def diffusion_trajectory(
@@ -332,9 +336,9 @@ def diffusion_trajectory(
     print("DIFFUSION TRAJECTORY VISUALIZATION")
     print("=" * 60)
 
-    train_data = load_ibpm_data(data_path, split='train')
+    train_data = load_ibpm_data(data_path, split="train")
     H, W = train_data.shape[-2], train_data.shape[-1]
-    window = config.get('window', 16)
+    window = config.get("window", 16)
     shape_flat = torch.Size((window * 2, H, W))
 
     # 幾何条件
@@ -365,7 +369,7 @@ def diffusion_trajectory(
             alpha_t = sde.alpha(t_curr)
 
             # Euler-Maruyama step (simplified)
-            beta_t = 1 - alpha_t ** 2
+            beta_t = 1 - alpha_t**2
             drift = -0.5 * beta_t / (1 - t_curr + 1e-5) * (x_t + eps)
             diffusion = torch.sqrt(beta_t / (1 - t_curr + 1e-5))
 
@@ -414,28 +418,28 @@ def diffusion_trajectory(
             w_vmin = -w_vmax
 
         # u velocity
-        im0 = axes[0, col].imshow(u_np, cmap='RdBu_r', vmin=u_vmin, vmax=u_vmax, origin='lower')
-        axes[0, col].set_title(f'Step {step}\nt={t_val:.2f}')
-        axes[0, col].axis('off')
+        im0 = axes[0, col].imshow(u_np, cmap="RdBu_r", vmin=u_vmin, vmax=u_vmax, origin="lower")
+        axes[0, col].set_title(f"Step {step}\nt={t_val:.2f}")
+        axes[0, col].axis("off")
         plt.colorbar(im0, ax=axes[0, col], fraction=0.046)
 
         # v velocity
-        im1 = axes[1, col].imshow(v_np, cmap='RdBu_r', vmin=v_vmin, vmax=v_vmax, origin='lower')
-        axes[1, col].axis('off')
+        im1 = axes[1, col].imshow(v_np, cmap="RdBu_r", vmin=v_vmin, vmax=v_vmax, origin="lower")
+        axes[1, col].axis("off")
         plt.colorbar(im1, ax=axes[1, col], fraction=0.046)
 
         # vorticity
-        im2 = axes[2, col].imshow(w_np, cmap='RdBu_r', vmin=w_vmin, vmax=w_vmax, origin='lower')
-        axes[2, col].axis('off')
+        im2 = axes[2, col].imshow(w_np, cmap="RdBu_r", vmin=w_vmin, vmax=w_vmax, origin="lower")
+        axes[2, col].axis("off")
         plt.colorbar(im2, ax=axes[2, col], fraction=0.046)
 
-    axes[0, 0].set_ylabel('u velocity', fontsize=12)
-    axes[1, 0].set_ylabel('v velocity', fontsize=12)
-    axes[2, 0].set_ylabel('vorticity', fontsize=12)
+    axes[0, 0].set_ylabel("u velocity", fontsize=12)
+    axes[1, 0].set_ylabel("v velocity", fontsize=12)
+    axes[2, 0].set_ylabel("vorticity", fontsize=12)
 
-    fig.suptitle('Diffusion Trajectory: Noise → Sample', fontsize=14)
+    fig.suptitle("Diffusion Trajectory: Noise → Sample", fontsize=14)
     plt.tight_layout()
-    fig.savefig(output_dir / 'trajectory.png', dpi=150, bbox_inches='tight')
+    fig.savefig(output_dir / "trajectory.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {output_dir / 'trajectory.png'}")
 
@@ -450,7 +454,7 @@ def compare_observations(
     print("OBSERVATION COMPARISON")
     print("=" * 60)
 
-    test_data = load_ibpm_data(data_path, split='test')
+    test_data = load_ibpm_data(data_path, split="test")
     x_star = test_data[0]
     t_show = 4  # 渦が見えやすいフレーム
 
@@ -470,20 +474,21 @@ def compare_observations(
     w_vmax = max(abs(w_gt.min().item()), abs(w_gt.max().item()))
 
     # Ground truth
-    im0 = axes[0, 0].imshow(u_gt.numpy(), cmap='RdBu_r', vmin=-u_vmax, vmax=u_vmax, origin='lower')
-    axes[0, 0].set_title(f'Ground Truth\n{x_star.shape[2]}x{x_star.shape[3]}')
-    axes[0, 0].axis('off')
-    plt.colorbar(im0, ax=axes[0, 0], fraction=0.046, label='u')
+    im0 = axes[0, 0].imshow(u_gt.numpy(), cmap="RdBu_r", vmin=-u_vmax, vmax=u_vmax, origin="lower")
+    axes[0, 0].set_title(f"Ground Truth\n{x_star.shape[2]}x{x_star.shape[3]}")
+    axes[0, 0].axis("off")
+    plt.colorbar(im0, ax=axes[0, 0], fraction=0.046, label="u")
 
-    im1 = axes[1, 0].imshow(v_gt.numpy(), cmap='RdBu_r', vmin=-v_vmax, vmax=v_vmax, origin='lower')
-    axes[1, 0].axis('off')
-    plt.colorbar(im1, ax=axes[1, 0], fraction=0.046, label='v')
+    im1 = axes[1, 0].imshow(v_gt.numpy(), cmap="RdBu_r", vmin=-v_vmax, vmax=v_vmax, origin="lower")
+    axes[1, 0].axis("off")
+    plt.colorbar(im1, ax=axes[1, 0], fraction=0.046, label="v")
 
-    im2 = axes[2, 0].imshow(w_gt.numpy(), cmap='RdBu_r', vmin=-w_vmax, vmax=w_vmax, origin='lower')
-    axes[2, 0].axis('off')
-    plt.colorbar(im2, ax=axes[2, 0], fraction=0.046, label='ω')
+    im2 = axes[2, 0].imshow(w_gt.numpy(), cmap="RdBu_r", vmin=-w_vmax, vmax=w_vmax, origin="lower")
+    axes[2, 0].axis("off")
+    plt.colorbar(im2, ax=axes[2, 0], fraction=0.046, label="ω")
 
     for i, sub in enumerate(subsample_rates):
+
         def A(x, s=sub):
             return x[..., ::s, ::s]
 
@@ -500,26 +505,26 @@ def compare_observations(
 
         print(f"  subsample={sub:2d}: {H_sub}x{W_sub} = {n_obs:,} pts ({pct:.1f}%)")
 
-        im_u = axes[0, i+1].imshow(u_obs.numpy(), cmap='RdBu_r', vmin=-u_vmax, vmax=u_vmax, origin='lower')
-        axes[0, i+1].set_title(f'sub={sub}\n{H_sub}x{W_sub} ({pct:.1f}%)')
-        axes[0, i+1].axis('off')
-        plt.colorbar(im_u, ax=axes[0, i+1], fraction=0.046, label='u')
+        im_u = axes[0, i + 1].imshow(u_obs.numpy(), cmap="RdBu_r", vmin=-u_vmax, vmax=u_vmax, origin="lower")
+        axes[0, i + 1].set_title(f"sub={sub}\n{H_sub}x{W_sub} ({pct:.1f}%)")
+        axes[0, i + 1].axis("off")
+        plt.colorbar(im_u, ax=axes[0, i + 1], fraction=0.046, label="u")
 
-        im_v = axes[1, i+1].imshow(v_obs.numpy(), cmap='RdBu_r', vmin=-v_vmax, vmax=v_vmax, origin='lower')
-        axes[1, i+1].axis('off')
-        plt.colorbar(im_v, ax=axes[1, i+1], fraction=0.046, label='v')
+        im_v = axes[1, i + 1].imshow(v_obs.numpy(), cmap="RdBu_r", vmin=-v_vmax, vmax=v_vmax, origin="lower")
+        axes[1, i + 1].axis("off")
+        plt.colorbar(im_v, ax=axes[1, i + 1], fraction=0.046, label="v")
 
-        im_w = axes[2, i+1].imshow(w_obs.numpy(), cmap='RdBu_r', vmin=-w_vmax, vmax=w_vmax, origin='lower')
-        axes[2, i+1].axis('off')
-        plt.colorbar(im_w, ax=axes[2, i+1], fraction=0.046, label='ω')
+        im_w = axes[2, i + 1].imshow(w_obs.numpy(), cmap="RdBu_r", vmin=-w_vmax, vmax=w_vmax, origin="lower")
+        axes[2, i + 1].axis("off")
+        plt.colorbar(im_w, ax=axes[2, i + 1], fraction=0.046, label="ω")
 
-    axes[0, 0].set_ylabel('u velocity', fontsize=12)
-    axes[1, 0].set_ylabel('v velocity', fontsize=12)
-    axes[2, 0].set_ylabel('vorticity', fontsize=12)
+    axes[0, 0].set_ylabel("u velocity", fontsize=12)
+    axes[1, 0].set_ylabel("v velocity", fontsize=12)
+    axes[2, 0].set_ylabel("vorticity", fontsize=12)
 
-    fig.suptitle(f'Sparse Observation Comparison (t={t_show}, noise std=0.1)', fontsize=14)
+    fig.suptitle(f"Sparse Observation Comparison (t={t_show}, noise std=0.1)", fontsize=14)
     plt.tight_layout()
-    fig.savefig(output_dir / 'observation_comparison.png', dpi=150, bbox_inches='tight')
+    fig.savefig(output_dir / "observation_comparison.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {output_dir / 'observation_comparison.png'}")
 
@@ -531,9 +536,10 @@ def kolmogorov_comparison(
 ) -> None:
     """IBPMデータにKolmogorovモデルを適用して比較"""
     import torch.nn.functional as F
+
     from experiments.kolmogorov.utils import make_score as make_kolmo_score
-    from sda.utils import load_config
     from sda.score import GaussianScore
+    from sda.utils import load_config
 
     print("\n" + "=" * 60)
     print("KOLMOGOROV MODEL COMPARISON")
@@ -547,24 +553,25 @@ def kolmogorov_comparison(
     kolmo_config = load_config(kolmo_run_dir)
     kolmo_score = make_kolmo_score(**kolmo_config).cuda()
 
-    state_path = kolmo_run_dir / 'state.pth'
+    state_path = kolmo_run_dir / "state.pth"
     if not state_path.exists():
-        state_path = kolmo_run_dir / 'state_final.pth'
+        state_path = kolmo_run_dir / "state_final.pth"
 
-    kolmo_score.load_state_dict(torch.load(state_path, map_location='cuda'))
+    kolmo_score.load_state_dict(torch.load(state_path, map_location="cuda"))
     kolmo_score.eval()
     print(f"  Loaded Kolmogorov model from: {kolmo_run_dir}")
 
     # IBPMデータをロード
-    test_data = load_ibpm_data(data_path, split='test')
+    test_data = load_ibpm_data(data_path, split="test")
     x_star = test_data[0, :8]
 
     # 64x64にリサイズ（Kolmogorovモデルの解像度）
-    x_star_64 = F.interpolate(x_star, size=(64, 64), mode='bilinear', align_corners=False)
+    x_star_64 = F.interpolate(x_star, size=(64, 64), mode="bilinear", align_corners=False)
     print(f"  Original: {x_star.shape} -> Resized: {x_star_64.shape}")
 
     # スパース再構成（subsample=4）
     subsample = 4
+
     def A_64(x):
         return x[..., ::subsample, ::subsample]
 
@@ -593,20 +600,20 @@ def kolmogorov_comparison(
     fig, axes = plt.subplots(2, 5, figsize=(20, 7))
 
     for t in range(5):
-        im = axes[0, t].imshow(w_gt_64[t].numpy(), cmap='RdBu_r', vmin=-vmax, vmax=vmax, origin='lower')
-        axes[0, t].set_title(f't={t}')
-        axes[0, t].axis('off')
+        im = axes[0, t].imshow(w_gt_64[t].numpy(), cmap="RdBu_r", vmin=-vmax, vmax=vmax, origin="lower")
+        axes[0, t].set_title(f"t={t}")
+        axes[0, t].axis("off")
 
-        axes[1, t].imshow(w_kolmo[t].numpy(), cmap='RdBu_r', vmin=-vmax, vmax=vmax, origin='lower')
-        axes[1, t].axis('off')
+        axes[1, t].imshow(w_kolmo[t].numpy(), cmap="RdBu_r", vmin=-vmax, vmax=vmax, origin="lower")
+        axes[1, t].axis("off")
 
-    axes[0, 0].set_ylabel('Ground Truth\n(64x64)', fontsize=12)
-    axes[1, 0].set_ylabel('Kolmogorov\nReconstruction', fontsize=12)
+    axes[0, 0].set_ylabel("Ground Truth\n(64x64)", fontsize=12)
+    axes[1, 0].set_ylabel("Kolmogorov\nReconstruction", fontsize=12)
 
-    plt.colorbar(im, ax=axes[:, :], shrink=0.6, label='Vorticity')
-    fig.suptitle(f'Kolmogorov Model on IBPM Data (sub={subsample})', fontsize=14)
+    plt.colorbar(im, ax=axes[:, :], shrink=0.6, label="Vorticity")
+    fig.suptitle(f"Kolmogorov Model on IBPM Data (sub={subsample})", fontsize=14)
     plt.tight_layout()
-    fig.savefig(output_dir / 'kolmogorov_comparison.png', dpi=150, bbox_inches='tight')
+    fig.savefig(output_dir / "kolmogorov_comparison.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
     error = (A_64(x_kolmo) - y_star_64).std()
@@ -624,9 +631,9 @@ def debug_model(
     print("MODEL DIAGNOSTICS")
     print("=" * 60)
 
-    train_data = load_ibpm_data(data_path, split='train')
+    train_data = load_ibpm_data(data_path, split="train")
     H, W = train_data.shape[-2], train_data.shape[-1]
-    window = config.get('window', 16)
+    window = config.get("window", 16)
 
     # 幾何条件
     cylinder_mask = build_cylinder_mask(H, W, center=(100.0, 100.0), radius=12.5)
@@ -675,30 +682,35 @@ def debug_model(
 
 def main():
     # デフォルト出力先: results/ibpm/evaluate/
-    default_output = get_results_dir('ibpm') / 'evaluate'
+    default_output = get_results_dir("ibpm") / "evaluate"
 
-    parser = argparse.ArgumentParser(description='IBPM Flow 実験の評価')
-    parser.add_argument('--run-dir', type=Path, required=True, help='学習済みモデルのディレクトリ')
-    parser.add_argument('--data-path', type=Path, default=Path('/home/devuser/fluid-sbi/data/ibpm_h5_400x200'),
-                        help='IBPMデータのパス')
-    parser.add_argument('--output-dir', type=Path, default=default_output,
-                        help='出力ディレクトリ')
-    parser.add_argument('--mode', type=str, default='all',
-                        choices=['all', 'data', 'sample', 'sparse', 'debug', 'trajectory', 'compare', 'kolmogorov'],
-                        help='実行モード')
-    parser.add_argument('--kolmo-run-dir', type=Path, default=None,
-                        help='Kolmogorovモデルのディレクトリ（kolmogorovモードで必要）')
+    parser = argparse.ArgumentParser(description="IBPM Flow 実験の評価")
+    parser.add_argument("--run-dir", type=Path, required=True, help="学習済みモデルのディレクトリ")
+    parser.add_argument(
+        "--data-path", type=Path, default=Path("/home/devuser/fluid-sbi/data/ibpm_h5_400x200"), help="IBPMデータのパス"
+    )
+    parser.add_argument("--output-dir", type=Path, default=default_output, help="出力ディレクトリ")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="all",
+        choices=["all", "data", "sample", "sparse", "debug", "trajectory", "compare", "kolmogorov"],
+        help="実行モード",
+    )
+    parser.add_argument(
+        "--kolmo-run-dir", type=Path, default=None, help="Kolmogorovモデルのディレクトリ（kolmogorovモードで必要）"
+    )
     args = parser.parse_args()
 
     # モード別出力ディレクトリを設定
     base_dir = args.output_dir
     output_dirs = {
-        'data': base_dir / 'data',
-        'sample': base_dir / 'sample',
-        'sparse': base_dir / 'sparse',
-        'trajectory': base_dir / 'trajectory',
-        'compare': base_dir / 'compare',
-        'kolmogorov': base_dir / 'kolmogorov',
+        "data": base_dir / "data",
+        "sample": base_dir / "sample",
+        "sparse": base_dir / "sparse",
+        "trajectory": base_dir / "trajectory",
+        "compare": base_dir / "compare",
+        "kolmogorov": base_dir / "kolmogorov",
     }
 
     # 必要なディレクトリを作成
@@ -708,46 +720,46 @@ def main():
 
     # モデルロード（data/compare/kolmogorovモード以外で必要）
     score, config = None, None
-    modes_without_model = ['data', 'compare', 'kolmogorov']
+    modes_without_model = ["data", "compare", "kolmogorov"]
     if args.mode not in modes_without_model:
         print(f"\nLoading model from: {args.run_dir}")
-        score, config = load_trained_model(args.run_dir, device='cuda')
+        score, config = load_trained_model(args.run_dir, device="cuda")
         print(f"Config: {config}")
         print("Model loaded successfully")
 
     # 実行
-    if args.mode == 'all' or args.mode == 'data':
-        visualize_data(args.data_path, output_dirs['data'])
+    if args.mode == "all" or args.mode == "data":
+        visualize_data(args.data_path, output_dirs["data"])
 
-    if args.mode == 'all' or args.mode == 'debug':
+    if args.mode == "all" or args.mode == "debug":
         if score is not None and config is not None:
             debug_model(score, config, args.data_path)
 
-    if args.mode == 'all' or args.mode == 'sample':
+    if args.mode == "all" or args.mode == "sample":
         if score is not None and config is not None:
-            unconditional_sample(score, config, args.data_path, output_dirs['sample'], n_samples=4)
+            unconditional_sample(score, config, args.data_path, output_dirs["sample"], n_samples=4)
 
-    if args.mode == 'all' or args.mode == 'sparse':
+    if args.mode == "all" or args.mode == "sparse":
         if score is not None and config is not None:
-            sparse_reconstruction(score, config, args.data_path, output_dirs['sparse'])
+            sparse_reconstruction(score, config, args.data_path, output_dirs["sparse"])
 
-    if args.mode == 'all' or args.mode == 'trajectory':
+    if args.mode == "all" or args.mode == "trajectory":
         if score is not None and config is not None:
-            diffusion_trajectory(score, config, args.data_path, output_dirs['trajectory'])
+            diffusion_trajectory(score, config, args.data_path, output_dirs["trajectory"])
 
-    if args.mode == 'all' or args.mode == 'compare':
-        compare_observations(args.data_path, output_dirs['compare'])
+    if args.mode == "all" or args.mode == "compare":
+        compare_observations(args.data_path, output_dirs["compare"])
 
-    if args.mode == 'kolmogorov':
+    if args.mode == "kolmogorov":
         if args.kolmo_run_dir is None:
             print("[ERROR] --kolmo-run-dir is required for kolmogorov mode")
         else:
-            kolmogorov_comparison(args.data_path, output_dirs['kolmogorov'], args.kolmo_run_dir)
+            kolmogorov_comparison(args.data_path, output_dirs["kolmogorov"], args.kolmo_run_dir)
 
     print("\n" + "=" * 60)
     print("DONE")
     print("=" * 60)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

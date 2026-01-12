@@ -6,16 +6,15 @@ IBPM（Immersed Boundary Projection Method）流体シミュレーション実�
 - 円柱周りの流れ（Re=100）の2D速度場を扱う
 """
 
+from pathlib import Path
+from typing import *
+
 import h5py
 import matplotlib.pyplot as plt
-import os
-import seaborn
-
 import numpy as np
+import seaborn
 from numpy.typing import ArrayLike
-from pathlib import Path
 from PIL import Image, ImageDraw, ImageOps
-from typing import *
 
 from sda.data.ibpm_dataset import IBPMNormalizer
 from sda.score import *
@@ -34,7 +33,7 @@ from sda.paths import get_project_root
 PATH = get_project_root()
 
 
-def make_chain() -> 'MarkovChain':
+def make_chain() -> "MarkovChain":
     """Kolmogorov流のマルコフ連鎖を作成
 
     注: IBPM実験でもKolmogorovFlowクラスを使用しているが、
@@ -94,7 +93,7 @@ def make_score(
     hidden_channels: Sequence[int] = (96, 192, 384),
     hidden_blocks: Sequence[int] = (3, 3, 3),
     kernel_size: int = 3,
-    activation: str = 'SiLU',
+    activation: str = "SiLU",
     **absorb,
 ) -> nn.Module:
     """IBPM用のスコアネットワークを構築
@@ -120,21 +119,21 @@ def make_score(
 
     # カーネルとして幾何条件付きU-Netを使用（IBPM専用）
     score.kernel = LocalScoreUNet(
-        channels=window * 2,           # window時刻 × 2成分の速度場
-        cond_channels=cond_channels,   # 幾何条件チャネル
+        channels=window * 2,  # window時刻 × 2成分の速度場
+        cond_channels=cond_channels,  # 幾何条件チャネル
         embedding=embedding,
         hidden_channels=hidden_channels,
         hidden_blocks=hidden_blocks,
         kernel_size=kernel_size,
         activation=ACTIVATIONS[activation],
-        spatial=2,                     # 2次元空間データ
-        padding_mode='reflect',        # 非周期境界条件（IBPM用）
+        spatial=2,  # 2次元空間データ
+        padding_mode="reflect",  # 非周期境界条件（IBPM用）
     )
 
     return score
 
 
-def load_score(file: Path, device: str = 'cpu', **kwargs) -> nn.Module:
+def load_score(file: Path, device: str = "cpu", **kwargs) -> nn.Module:
     """学習済みスコアネットワークをロード
 
     Args:
@@ -183,7 +182,7 @@ def vorticity2rgb(
     # [0, 1]に戻してカラーマップを適用
     w = (w + 1) / 2
     w = seaborn.cm.icefire(w)  # 発散カラーマップ（青-白-赤）
-    w = 256 * w[..., :3]       # RGB成分のみ抽出（アルファチャネル除去）
+    w = 256 * w[..., :3]  # RGB成分のみ抽出（アルファチャネル除去）
     w = w.astype(np.uint8)
 
     return w
@@ -225,7 +224,7 @@ def draw(
 
     # 白背景のキャンバスを作成
     img = Image.new(
-        'RGB',
+        "RGB",
         size=(
             N * (W + pad) + pad,  # 横: N個の画像 + (N+1)個の余白
             M * (H + pad) + pad,  # 縦: M個の画像 + (M+1)個の余白
@@ -246,7 +245,7 @@ def draw(
             # マスクがある場合は半透明グレーで覆う（円柱など固体領域）
             if mask is not None:
                 img.paste(
-                    Image.new('L', size=(W, H), color=240),  # 薄いグレー
+                    Image.new("L", size=(W, H), color=240),  # 薄いグレー
                     offset,
                     Image.fromarray(~mask[i][j]),  # マスクの反転（Falseの領域を保護）
                 )
@@ -290,7 +289,7 @@ def sandwich(
 
     # キャンバスサイズ: 最後の画像の右下隅まで
     img = Image.new(
-        'RGB',
+        "RGB",
         size=(
             W + (N - 1) * offset,  # 幅: 元の幅 + オフセット × (枚数-1)
             H + (N - 1) * offset,  # 高さ: 元の高さ + オフセット × (枚数-1)
@@ -341,16 +340,17 @@ def save_gif(
     # GIFとして保存（ループ再生）
     imgs[0].save(
         file,
-        save_all=True,           # 複数フレームを保存
+        save_all=True,  # 複数フレームを保存
         append_images=imgs[1:],  # 2フレーム目以降を追加
-        duration=int(1000 * dt), # フレーム間隔（ミリ秒）
-        loop=0,                  # 無限ループ
+        duration=int(1000 * dt),  # フレーム間隔（ミリ秒）
+        loop=0,  # 無限ループ
     )
 
 
 # ===========================================================================
 # 追加のユーティリティ関数（evaluate.py 用）
 # ===========================================================================
+
 
 def compute_vorticity(x: Tensor) -> Tensor:
     """速度場から渦度を計算
@@ -370,7 +370,7 @@ def compute_vorticity(x: Tensor) -> Tensor:
 
 def plot_vorticity(
     w: Tensor,
-    title: str = 'Vorticity',
+    title: str = "Vorticity",
     vmin: float = None,
     vmax: float = None,
     use_percentile: bool = False,
@@ -411,23 +411,23 @@ def plot_vorticity(
         axes = [axes]
 
     for i in range(n_samples):
-        im = axes[i].imshow(w_np[i], cmap='RdBu_r', vmin=vmin, vmax=vmax, origin='lower')
-        axes[i].set_title(f't={i}')
-        axes[i].axis('off')
+        im = axes[i].imshow(w_np[i], cmap="RdBu_r", vmin=vmin, vmax=vmax, origin="lower")
+        axes[i].set_title(f"t={i}")
+        axes[i].axis("off")
         plt.colorbar(im, ax=axes[i], fraction=0.046)
 
     fig.suptitle(title, fontsize=14, y=1.02)
     plt.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
     return fig
 
 
 def plot_velocity_field(
     x: Tensor,
-    title: str = 'Velocity',
+    title: str = "Velocity",
     use_percentile: bool = True,
     figsize: Tuple[int, int] = (15, 6),
     save_path: Path = None,
@@ -461,39 +461,39 @@ def plot_velocity_field(
         u_range = [x_np[:, 0].min(), x_np[:, 0].max()]
         v_range = [x_np[:, 1].min(), x_np[:, 1].max()]
 
-    mag = np.sqrt(x_np[:, 0]**2 + x_np[:, 1]**2)
+    mag = np.sqrt(x_np[:, 0] ** 2 + x_np[:, 1] ** 2)
 
     for t in range(T):
-        im0 = axes[0, t].imshow(x_np[t, 0], cmap='RdBu_r', vmin=u_range[0], vmax=u_range[1], origin='lower')
-        axes[0, t].set_title(f't={t}')
-        axes[0, t].axis('off')
+        im0 = axes[0, t].imshow(x_np[t, 0], cmap="RdBu_r", vmin=u_range[0], vmax=u_range[1], origin="lower")
+        axes[0, t].set_title(f"t={t}")
+        axes[0, t].axis("off")
 
-        im1 = axes[1, t].imshow(x_np[t, 1], cmap='RdBu_r', vmin=v_range[0], vmax=v_range[1], origin='lower')
-        axes[1, t].axis('off')
+        im1 = axes[1, t].imshow(x_np[t, 1], cmap="RdBu_r", vmin=v_range[0], vmax=v_range[1], origin="lower")
+        axes[1, t].axis("off")
 
-        im2 = axes[2, t].imshow(mag[t], cmap='viridis', origin='lower')
-        axes[2, t].axis('off')
+        im2 = axes[2, t].imshow(mag[t], cmap="viridis", origin="lower")
+        axes[2, t].axis("off")
 
-    axes[0, 0].set_ylabel('u velocity')
-    axes[1, 0].set_ylabel('v velocity')
-    axes[2, 0].set_ylabel('|v| magnitude')
+    axes[0, 0].set_ylabel("u velocity")
+    axes[1, 0].set_ylabel("v velocity")
+    axes[2, 0].set_ylabel("|v| magnitude")
 
-    plt.colorbar(im0, ax=axes[0, :], shrink=0.6, label='u')
-    plt.colorbar(im1, ax=axes[1, :], shrink=0.6, label='v')
-    plt.colorbar(im2, ax=axes[2, :], shrink=0.6, label='|v|')
+    plt.colorbar(im0, ax=axes[0, :], shrink=0.6, label="u")
+    plt.colorbar(im1, ax=axes[1, :], shrink=0.6, label="v")
+    plt.colorbar(im2, ax=axes[2, :], shrink=0.6, label="|v|")
 
     fig.suptitle(title, fontsize=14)
     plt.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
     return fig
 
 
 def load_ibpm_data(
     data_path: Path,
-    split: str = 'train',
+    split: str = "train",
     normalize: bool = False,
 ) -> Tensor:
     """IBPMデータをロード
@@ -506,9 +506,9 @@ def load_ibpm_data(
     Returns:
         data: (N, T, 2, H, W) 速度場テンソル
     """
-    file_path = Path(data_path) / f'{split}.h5'
-    with h5py.File(file_path, 'r') as f:
-        data = torch.from_numpy(f['x'][:])
+    file_path = Path(data_path) / f"{split}.h5"
+    with h5py.File(file_path, "r") as f:
+        data = torch.from_numpy(f["x"][:])
 
     if normalize:
         normalizer = IBPMNormalizer()
@@ -519,7 +519,7 @@ def load_ibpm_data(
 
 def load_trained_model(
     run_dir: Path,
-    device: str = 'cuda',
+    device: str = "cuda",
 ) -> Tuple[nn.Module, dict]:
     """学習済みモデルをロード
 
@@ -534,10 +534,10 @@ def load_trained_model(
     run_dir = Path(run_dir)
 
     # state_final.pth または state.pth を探す
-    if (run_dir / 'state_final.pth').exists():
-        state_path = run_dir / 'state_final.pth'
-    elif (run_dir / 'state.pth').exists():
-        state_path = run_dir / 'state.pth'
+    if (run_dir / "state_final.pth").exists():
+        state_path = run_dir / "state_final.pth"
+    elif (run_dir / "state.pth").exists():
+        state_path = run_dir / "state.pth"
     else:
         raise FileNotFoundError(f"No state file found in {run_dir}")
 
@@ -579,6 +579,7 @@ def reconstruct_sparse(
     device = next(score.parameters()).device
 
     for sub in subsample_rates:
+
         def A(x, s=sub):
             return x[..., ::s, ::s]
 
@@ -604,7 +605,7 @@ def reconstruct_sparse(
 
 def plot_velocity_and_vorticity(
     x: Tensor,
-    title: str = 'Velocity and Vorticity',
+    title: str = "Velocity and Vorticity",
     use_percentile: bool = True,
     figsize: Tuple[int, int] = (15, 9),
     save_path: Path = None,
@@ -651,28 +652,28 @@ def plot_velocity_and_vorticity(
     w_max = max(abs(w_low), abs(w_high))
 
     for t in range(T):
-        im0 = axes[0, t].imshow(x_np[t, 0], cmap='RdBu_r', vmin=-u_max, vmax=u_max, origin='lower')
-        axes[0, t].set_title(f't={t}')
-        axes[0, t].axis('off')
+        im0 = axes[0, t].imshow(x_np[t, 0], cmap="RdBu_r", vmin=-u_max, vmax=u_max, origin="lower")
+        axes[0, t].set_title(f"t={t}")
+        axes[0, t].axis("off")
 
-        im1 = axes[1, t].imshow(x_np[t, 1], cmap='RdBu_r', vmin=-v_max, vmax=v_max, origin='lower')
-        axes[1, t].axis('off')
+        im1 = axes[1, t].imshow(x_np[t, 1], cmap="RdBu_r", vmin=-v_max, vmax=v_max, origin="lower")
+        axes[1, t].axis("off")
 
-        im2 = axes[2, t].imshow(w_np[t], cmap='RdBu_r', vmin=-w_max, vmax=w_max, origin='lower')
-        axes[2, t].axis('off')
+        im2 = axes[2, t].imshow(w_np[t], cmap="RdBu_r", vmin=-w_max, vmax=w_max, origin="lower")
+        axes[2, t].axis("off")
 
-    axes[0, 0].set_ylabel('u velocity')
-    axes[1, 0].set_ylabel('v velocity')
-    axes[2, 0].set_ylabel('vorticity')
+    axes[0, 0].set_ylabel("u velocity")
+    axes[1, 0].set_ylabel("v velocity")
+    axes[2, 0].set_ylabel("vorticity")
 
-    plt.colorbar(im0, ax=axes[0, :], shrink=0.6, label='u')
-    plt.colorbar(im1, ax=axes[1, :], shrink=0.6, label='v')
-    plt.colorbar(im2, ax=axes[2, :], shrink=0.6, label='ω')
+    plt.colorbar(im0, ax=axes[0, :], shrink=0.6, label="u")
+    plt.colorbar(im1, ax=axes[1, :], shrink=0.6, label="v")
+    plt.colorbar(im2, ax=axes[2, :], shrink=0.6, label="ω")
 
     fig.suptitle(title, fontsize=14)
     plt.tight_layout()
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
 
     return fig

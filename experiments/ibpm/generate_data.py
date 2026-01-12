@@ -15,23 +15,24 @@ Output:
     └── test.h5   # (T, 8, 2, 100, 200)
 """
 
-import numpy as np
-import h5py
-from pathlib import Path
-from tqdm import tqdm
-from scipy.ndimage import zoom
 import sys
+from pathlib import Path
+
+import h5py
+import numpy as np
+from scipy.ndimage import zoom
+from tqdm import tqdm
 
 # パス設定
-SOURCE_DIR = Path('/workspace/data/ibpm_h5_wide_perturbed')
-OUTPUT_DIR = Path('/workspace/data/ibpm_h5_small')
+SOURCE_DIR = Path("/workspace/data/ibpm_h5_wide_perturbed")
+OUTPUT_DIR = Path("/workspace/data/ibpm_h5_small")
 
 # 設定
 CONFIG = {
-    'target_height': 100,
-    'target_width': 200,
-    'n_samples': 64,      # 目標サンプル数
-    'time_window': 42,    # 各サンプルの時間長
+    "target_height": 100,
+    "target_width": 200,
+    "n_samples": 64,  # 目標サンプル数
+    "time_window": 42,  # 各サンプルの時間長
 }
 
 
@@ -69,8 +70,8 @@ def create_samples_from_source(
 ) -> list:
     """ソースファイルからサンプルを生成"""
 
-    with h5py.File(source_file, 'r') as f:
-        data = f['x'][:]  # (T, N, C, H, W)
+    with h5py.File(source_file, "r") as f:
+        data = f["x"][:]  # (T, N, C, H, W)
 
     T, N, C, H, W = data.shape
     print(f"  Source shape: {data.shape}")
@@ -87,7 +88,7 @@ def create_samples_from_source(
         # スライディングウィンドウ
         stride = max(1, (T - time_window) // 4)  # 4つのウィンドウを取得
         for start in range(0, T - time_window + 1, stride):
-            window = resized[start:start + time_window]  # (time_window, C, H, W)
+            window = resized[start : start + time_window]  # (time_window, C, H, W)
             samples.append(window)
 
             if len(samples) >= n_samples:
@@ -114,9 +115,9 @@ def create_dataset(
     indices = np.random.permutation(n_samples)
 
     splits = {
-        'train': [all_samples[i] for i in indices[:n_train]],
-        'valid': [all_samples[i] for i in indices[n_train:n_train+n_valid]],
-        'test': [all_samples[i] for i in indices[n_train+n_valid:]],
+        "train": [all_samples[i] for i in indices[:n_train]],
+        "valid": [all_samples[i] for i in indices[n_train : n_train + n_valid]],
+        "test": [all_samples[i] for i in indices[n_train + n_valid :]],
     }
 
     for split_name, samples in splits.items():
@@ -127,19 +128,19 @@ def create_dataset(
         # HDF5には (T, N, C, H, W) で保存（IBPMDatasetが期待する形式）
         data = np.stack(samples, axis=1)  # (T, N, C, H, W)
 
-        output_file = output_dir / f'{split_name}.h5'
-        with h5py.File(output_file, 'w') as f:
+        output_file = output_dir / f"{split_name}.h5"
+        with h5py.File(output_file, "w") as f:
             dset = f.create_dataset(
-                'x',
+                "x",
                 data=data,
                 dtype=np.float32,
-                compression='gzip',
+                compression="gzip",
                 compression_opts=4,
             )
-            dset.attrs['description'] = 'IBPM velocity field (u, v) - resized'
-            dset.attrs['shape'] = '(T, N, C, H, W)'
-            dset.attrs['original_resolution'] = '199x399'
-            dset.attrs['target_resolution'] = f'{CONFIG["target_height"]}x{CONFIG["target_width"]}'
+            dset.attrs["description"] = "IBPM velocity field (u, v) - resized"
+            dset.attrs["shape"] = "(T, N, C, H, W)"
+            dset.attrs["original_resolution"] = "199x399"
+            dset.attrs["target_resolution"] = f"{CONFIG['target_height']}x{CONFIG['target_width']}"
 
         print(f"{split_name}: {data.shape} -> {output_file}")
 
@@ -155,7 +156,7 @@ def main():
     print("=" * 60)
 
     # ソースファイルを確認
-    train_source = SOURCE_DIR / 'train.h5'
+    train_source = SOURCE_DIR / "train.h5"
     if not train_source.exists():
         print(f"ERROR: Source file not found: {train_source}")
         sys.exit(1)
@@ -164,10 +165,10 @@ def main():
     print("\nGenerating samples from source data...")
     all_samples = create_samples_from_source(
         train_source,
-        CONFIG['n_samples'],
-        CONFIG['time_window'],
-        CONFIG['target_height'],
-        CONFIG['target_width'],
+        CONFIG["n_samples"],
+        CONFIG["time_window"],
+        CONFIG["target_height"],
+        CONFIG["target_width"],
     )
 
     print(f"\nCollected {len(all_samples)} samples")
@@ -190,12 +191,12 @@ def main():
     std_u = all_data[:, :, 0, :, :].std()
     std_v = all_data[:, :, 1, :, :].std()
 
-    print(f"\nNormalizer statistics (update ibpm_dataset.py):")
+    print("\nNormalizer statistics (update ibpm_dataset.py):")
     print(f"  DEFAULT_MEAN = torch.tensor([{mean_u:.6f}, {mean_v:.6f}])")
     print(f"  DEFAULT_STD = torch.tensor([{std_u:.6f}, {std_v:.6f}])")
 
     print("\n✓ Data generation completed!")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

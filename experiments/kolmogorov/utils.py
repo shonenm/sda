@@ -6,21 +6,19 @@ Kolmogorov流（2次元乱流）実験のためのユーティリティ関数群
 - 周期境界条件を考慮したU-Netの実装
 """
 
-import os
-import seaborn
-
-from numpy.typing import ArrayLike
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageOps
 from typing import *
 
-from sda.mcs import *
-from sda.score import *
-from sda.utils import *
+import seaborn
+from numpy.typing import ArrayLike
+from PIL import Image, ImageDraw, ImageOps
 
+from sda.mcs import *
 
 # パス設定を一元管理モジュールからインポート
 from sda.paths import get_project_root
+from sda.score import *
+from sda.utils import *
 
 PATH = get_project_root()
 
@@ -61,7 +59,7 @@ class LocalScoreUNet(ScoreUNet):
         forcing = torch.sin(4 * domain).expand(1, size, size).clone()
 
         # バッファとして登録（学習パラメータではないが、デバイス移動時に自動で移動される）
-        self.register_buffer('forcing', forcing)
+        self.register_buffer("forcing", forcing)
 
     def forward(self, x: Tensor, t: Tensor, c: Tensor = None) -> Tensor:
         """順伝播：常に強制項を条件として使用
@@ -83,7 +81,7 @@ def make_score(
     hidden_channels: Sequence[int] = (64, 128, 256),
     hidden_blocks: Sequence[int] = (3, 3, 3),
     kernel_size: int = 3,
-    activation: str = 'SiLU',
+    activation: str = "SiLU",
     **absorb,
 ) -> nn.Module:
     """Kolmogorov流用のスコアネットワークを構築
@@ -108,20 +106,20 @@ def make_score(
 
     # カーネルとして強制項付きU-Netを使用
     score.kernel = LocalScoreUNet(
-        channels=window * 2,           # window時刻 × 2成分の速度場
+        channels=window * 2,  # window時刻 × 2成分の速度場
         embedding=embedding,
         hidden_channels=hidden_channels,
         hidden_blocks=hidden_blocks,
         kernel_size=kernel_size,
         activation=ACTIVATIONS[activation],
-        spatial=2,                     # 2次元空間データ
-        padding_mode='circular',       # 周期境界条件（トーラス位相）
+        spatial=2,  # 2次元空間データ
+        padding_mode="circular",  # 周期境界条件（トーラス位相）
     )
 
     return score
 
 
-def load_score(file: Path, device: str = 'cpu', **kwargs) -> nn.Module:
+def load_score(file: Path, device: str = "cpu", **kwargs) -> nn.Module:
     """学習済みスコアネットワークをロード
 
     Args:
@@ -169,7 +167,7 @@ def vorticity2rgb(
     # [0, 1]に戻してカラーマップを適用
     w = (w + 1) / 2
     w = seaborn.cm.icefire(w)  # 発散カラーマップ（青-白-赤）
-    w = 256 * w[..., :3]       # RGB成分のみ抽出（アルファチャネル除去）
+    w = 256 * w[..., :3]  # RGB成分のみ抽出（アルファチャネル除去）
     w = w.astype(np.uint8)
 
     return w
@@ -210,7 +208,7 @@ def draw(
 
     # 白背景のキャンバスを作成
     img = Image.new(
-        'RGB',
+        "RGB",
         size=(
             N * (W + pad) + pad,  # 横: N個の画像 + (N+1)個の余白
             M * (H + pad) + pad,  # 縦: M個の画像 + (M+1)個の余白
@@ -231,7 +229,7 @@ def draw(
             # マスクがある場合は半透明グレーで覆う
             if mask is not None:
                 img.paste(
-                    Image.new('L', size=(W, H), color=240),  # 薄いグレー
+                    Image.new("L", size=(W, H), color=240),  # 薄いグレー
                     offset,
                     Image.fromarray(~mask[i][j]),  # マスクの反転（Falseの領域を保護）
                 )
@@ -274,7 +272,7 @@ def sandwich(
 
     # キャンバスサイズ: 最後の画像の右下隅まで
     img = Image.new(
-        'RGB',
+        "RGB",
         size=(
             W + (N - 1) * offset,  # 幅: 元の幅 + オフセット × (枚数-1)
             H + (N - 1) * offset,  # 高さ: 元の高さ + オフセット × (枚数-1)
@@ -323,8 +321,8 @@ def save_gif(
     # GIFとして保存（ループ再生）
     imgs[0].save(
         file,
-        save_all=True,           # 複数フレームを保存
+        save_all=True,  # 複数フレームを保存
         append_images=imgs[1:],  # 2フレーム目以降を追加
-        duration=int(1000 * dt), # フレーム間隔（ミリ秒）
-        loop=0,                  # 無限ループ
+        duration=int(1000 * dt),  # フレーム間隔（ミリ秒）
+        loop=0,  # 無限ループ
     )
