@@ -1,9 +1,9 @@
 r"""Neural networks"""
 
-import torch.nn as nn
+from collections.abc import Callable, Sequence
 
+import torch.nn as nn
 from torch import Tensor
-from typing import *
 from zuko.nn import LayerNorm
 
 
@@ -76,10 +76,10 @@ class ResMLP(nn.Sequential):
             # 残差ブロック: LayerNorm -> Linear -> Activation -> Linear
             blocks.append(
                 ResidualBlock(
-                    LayerNorm(),                          # 正規化
-                    nn.Linear(after, after, **kwargs),    # 第1線形層
-                    activation(),                         # 活性化関数
-                    nn.Linear(after, after, **kwargs),    # 第2線形層
+                    LayerNorm(),  # 正規化
+                    nn.Linear(after, after, **kwargs),  # 第1線形層
+                    activation(),  # 活性化関数
+                    nn.Linear(after, after, **kwargs),  # 第2線形層
                 )
             )
 
@@ -120,8 +120,8 @@ class UNet(nn.Module):
         mod_features: int,
         hidden_channels: Sequence[int] = (32, 64, 128),
         hidden_blocks: Sequence[int] = (2, 3, 5),
-        kernel_size: Union[int, Sequence[int]] = 3,
-        stride: Union[int, Sequence[int]] = 2,
+        kernel_size: int | Sequence[int] = 3,
+        stride: int | Sequence[int] = 2,
         activation: Callable[[], nn.Module] = nn.ReLU,
         spatial: int = 2,
         **kwargs,
@@ -161,7 +161,7 @@ class UNet(nn.Module):
             ),
             residue=nn.Sequential(
                 # 残差処理パス
-                LayerNorm(-(spatial + 1)),                # チャネル正規化
+                LayerNorm(-(spatial + 1)),  # チャネル正規化
                 convolution(channels, channels, **kwargs),
                 activation(),
                 convolution(channels, channels, **kwargs),
@@ -190,7 +190,7 @@ class UNet(nn.Module):
                 tails.append(
                     nn.Sequential(
                         LayerNorm(-(spatial + 1)),
-                        nn.Upsample(scale_factor=tuple(stride), mode='nearest'),  # 解像度を上げる
+                        nn.Upsample(scale_factor=tuple(stride), mode="nearest"),  # 解像度を上げる
                         convolution(
                             hidden_channels[i],
                             hidden_channels[i - 1],
@@ -218,8 +218,8 @@ class UNet(nn.Module):
         # x: 入力データ（画像など）
         # y: 変調信号（時刻、条件など）
         memory = []  # スキップ接続用の中間特徴を保存
-                     # U-Net のようなEncoder-Decoder構造の間で、同じ階層の特徴を飛び越えて伝える接続
-                     # エンコーダ側で得た「高解像度・局所的な情報」をデコーダ側でも使えるようにする
+        # U-Net のようなEncoder-Decoder構造の間で、同じ階層の特徴を飛び越えて伝える接続
+        # エンコーダ側で得た「高解像度・局所的な情報」をデコーダ側でも使えるようにする
 
         # エンコーダパス：解像度を下げながら特徴抽出
         for head, blocks in zip(self.heads, self.descent):
@@ -243,7 +243,7 @@ class UNet(nn.Module):
                 x_up = tail(x)
                 # サイズ不一致を補間で解決（奇数解像度対応）
                 if x_up.shape[-2:] != skip.shape[-2:]:
-                    x_up = nn.functional.interpolate(x_up, size=skip.shape[-2:], mode='nearest')
+                    x_up = nn.functional.interpolate(x_up, size=skip.shape[-2:], mode="nearest")
                 x = x_up + skip
             else:
                 x = tail(x)

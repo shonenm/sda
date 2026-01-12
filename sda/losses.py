@@ -8,19 +8,24 @@ r"""Loss functions for physics-informed score-based models
 - 流出境界勾配罰則
 """
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+import torch
+import torch.nn.functional as F
 from torch import Tensor
-from typing import *
+
+if TYPE_CHECKING:
+    from .score import VPSDE
 
 
 def tweedie_estimator(
     x_t: Tensor,
     t: Tensor,
     score: Tensor,
-    sde: 'VPSDE',
+    sde: VPSDE,
 ) -> Tensor:
     """Tweedie推定量: x̂ = x_t + σ²(t) * ∇ log p_t
 
@@ -35,9 +40,9 @@ def tweedie_estimator(
     """
     # VP-SDEの場合: σ²(t) = 1 - α²(t)
     # 実装のSDE定義に応じて調整が必要
-    if hasattr(sde, 'get_sigma_squared'):
+    if hasattr(sde, "get_sigma_squared"):
         sigma_sq = sde.get_sigma_squared(t)  # (B,)
-    elif hasattr(sde, 'sigma'):
+    elif hasattr(sde, "sigma"):
         sigma_sq = sde.sigma(t) ** 2
     else:
         # 簡易的な実装: β(t) から計算
@@ -53,11 +58,7 @@ def tweedie_estimator(
     return x_hat
 
 
-def masked_mse(
-    x_hat: Tensor,
-    x_true: Tensor,
-    fluid_mask: Tensor
-) -> Tensor:
+def masked_mse(x_hat: Tensor, x_true: Tensor, fluid_mask: Tensor) -> Tensor:
     """流体領域のみでMSE計算
 
     Args:
@@ -78,10 +79,7 @@ def masked_mse(
     return diff.pow(2).sum() / (n_fluid + 1e-12)
 
 
-def compute_distance_field(
-    cylinder_mask: Tensor,
-    max_dist: float = 5.0
-) -> Tensor:
+def compute_distance_field(cylinder_mask: Tensor, max_dist: float = 5.0) -> Tensor:
     """円柱境界からの距離場を計算（境界付近の重み付け用）
 
     Args:
@@ -106,7 +104,7 @@ def compute_distance_field(
 def no_slip_penalty(
     x_hat: Tensor,
     fluid_mask: Tensor,
-    distance_field: Optional[Tensor] = None
+    distance_field: Tensor | None = None,
 ) -> Tensor:
     """壁・円柱境界近傍での速度罰則
 
@@ -122,9 +120,8 @@ def no_slip_penalty(
     if distance_field is None:
         # 簡易版：境界から2px以内
         from scipy.ndimage import binary_erosion
-        eroded = torch.from_numpy(
-            binary_erosion(fluid_mask.cpu().numpy(), iterations=2)
-        ).float().to(fluid_mask.device)
+
+        eroded = torch.from_numpy(binary_erosion(fluid_mask.cpu().numpy(), iterations=2)).float().to(fluid_mask.device)
         boundary_band = fluid_mask - eroded
     else:
         # 距離場を使った重み付け（より精密）
@@ -139,10 +136,7 @@ def no_slip_penalty(
     return penalty
 
 
-def divergence_penalty(
-    x_hat: Tensor,
-    fluid_mask: Tensor
-) -> Tensor:
+def divergence_penalty(x_hat: Tensor, fluid_mask: Tensor) -> Tensor:
     """非圧縮性制約: ∇·u = 0（流体領域のみ）
 
     中心差分＋境界では片側差分を使用
@@ -163,14 +157,14 @@ def divergence_penalty(
     # x方向微分（中心差分、Δx = 1）
     du_dx = torch.zeros_like(u)
     du_dx[:, :, 1:-1] = (u[:, :, 2:] - u[:, :, :-2]) / 2.0  # 中心差分 / (2Δx)
-    du_dx[:, :, 0] = u[:, :, 1] - u[:, :, 0]         # 左端：前進差分 / Δx
-    du_dx[:, :, -1] = u[:, :, -1] - u[:, :, -2]      # 右端：後退差分 / Δx
+    du_dx[:, :, 0] = u[:, :, 1] - u[:, :, 0]  # 左端：前進差分 / Δx
+    du_dx[:, :, -1] = u[:, :, -1] - u[:, :, -2]  # 右端：後退差分 / Δx
 
     # y方向微分（中心差分、Δy = 1）
     dv_dy = torch.zeros_like(v)
     dv_dy[:, 1:-1, :] = (v[:, 2:, :] - v[:, :-2, :]) / 2.0  # 中心差分 / (2Δy)
-    dv_dy[:, 0, :] = v[:, 1, :] - v[:, 0, :]         # 上端：前進差分 / Δy
-    dv_dy[:, -1, :] = v[:, -1, :] - v[:, -2, :]      # 下端：後退差分 / Δy
+    dv_dy[:, 0, :] = v[:, 1, :] - v[:, 0, :]  # 上端：前進差分 / Δy
+    dv_dy[:, -1, :] = v[:, -1, :] - v[:, -2, :]  # 下端：後退差分 / Δy
 
     # 発散
     div = du_dx + dv_dy  # (B, H, W)
@@ -197,9 +191,9 @@ def outflow_grad_penalty(x_hat: Tensor) -> Tensor:
         loss: スカラー損失
     """
     # 右端列とその前列の差分（u, v 両方）
-    u_out = x_hat[:, :, :, -1]   # (B, C, H)
+    u_out = x_hat[:, :, :, -1]  # (B, C, H)
     u_prev = x_hat[:, :, :, -2]
-    grad = u_out - u_prev         # ∂u/∂x ≈ (u[x] - u[x-1]) / Δx, Δx=1
+    grad = u_out - u_prev  # ∂u/∂x ≈ (u[x] - u[x-1]) / Δx, Δx=1
     return grad.pow(2).mean()
 
 
@@ -210,10 +204,10 @@ def composite_loss(
     x_true: Tensor,
     cond: Tensor,
     fluid_mask: Tensor,
-    sde: 'VPSDE',
-    weights: Dict[str, float],
-    score_matching_fn: Optional[Callable] = None,
-) -> Tuple[Tensor, Dict[str, float]]:
+    sde: VPSDE,
+    weights: dict[str, float],
+    score_matching_fn: Callable | None = None,
+) -> tuple[Tensor, dict[str, float]]:
     """統合損失関数
 
     Args:
@@ -238,7 +232,7 @@ def composite_loss(
         # デフォルト: L2損失
         # 本来のスコアマッチング損失は ∇ log p_t と score の一致
         # 簡易的には (x_true - x_t) / σ²(t) との L2 距離
-        target_score = (x_true - x_t)
+        target_score = x_true - x_t
         loss_score = F.mse_loss(score, target_score)
 
     # Tweedie推定量（クリーンデータの推定）
@@ -252,20 +246,20 @@ def composite_loss(
 
     # 総損失
     total = (
-        weights.get('score', 1.0) * loss_score +
-        weights.get('mask', 1.0) * loss_mask +
-        weights.get('wall', 0.1) * loss_wall +
-        weights.get('div', 0.05) * loss_div +
-        weights.get('out', 0.05) * loss_out
+        weights.get("score", 1.0) * loss_score
+        + weights.get("mask", 1.0) * loss_mask
+        + weights.get("wall", 0.1) * loss_wall
+        + weights.get("div", 0.05) * loss_div
+        + weights.get("out", 0.05) * loss_out
     )
 
     # 損失の詳細
     loss_dict = {
-        'score': loss_score.item(),
-        'mask': loss_mask.item(),
-        'wall': loss_wall.item(),
-        'div': loss_div.item(),
-        'out': loss_out.item(),
+        "score": loss_score.item(),
+        "mask": loss_mask.item(),
+        "wall": loss_wall.item(),
+        "div": loss_div.item(),
+        "out": loss_out.item(),
     }
 
     return total, loss_dict

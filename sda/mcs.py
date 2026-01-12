@@ -1,22 +1,22 @@
 r"""Markov chains"""
 
 import abc
+import math
+import random
+from collections.abc import Callable
+
 import jax
 import jax.numpy as jnp
 import jax.random as rng
 import numpy as np
-import math
-import random
 import torch
+from torch import Size, Tensor
+from torch.distributions import MultivariateNormal, Normal
 
 try:
     import jax_cfd.base as cfd
-except:
+except Exception:
     pass
-
-from torch import Tensor, Size
-from torch.distributions import Normal, MultivariateNormal
-from typing import *
 
 
 class MarkovChain(abc.ABC):
@@ -32,7 +32,7 @@ class MarkovChain(abc.ABC):
 
     @abc.abstractmethod
     def prior(self, shape: Size = ()) -> Tensor:
-        r""" x_0 ~ p(x_0)
+        r"""x_0 ~ p(x_0)
 
         初期状態の分布からサンプリング
         Args:
@@ -45,7 +45,7 @@ class MarkovChain(abc.ABC):
 
     @abc.abstractmethod
     def transition(self, x: Tensor) -> Tensor:
-        r""" x_i ~ p(x_i | x_{i-1})
+        r"""x_i ~ p(x_i | x_{i-1})
 
         遷移確率に基づいて次の状態を生成
         Args:
@@ -57,7 +57,7 @@ class MarkovChain(abc.ABC):
         pass
 
     def trajectory(self, x: Tensor, length: int, last: bool = False) -> Tensor:
-        r""" (x_1, ..., x_n) ~ \prod_i p(x_i | x_{i-1})
+        r"""(x_1, ..., x_n) ~ \prod_i p(x_i | x_{i-1})
 
         マルコフ連鎖の軌跡を生成
         Args:
@@ -100,12 +100,14 @@ class DampedSpring(MarkovChain):
         self.Sigma_0 = torch.tensor([1.0, 1.0, 1.0, 1.0]).diag()
 
         # 状態遷移行列（線形システムの動力学）
-        self.A = torch.tensor([
-            [1.0, dt, dt**2 / 2, 0.0],  # 位置の更新
-            [0.0, 1.0, dt, 0.0],         # 速度の更新
-            [-0.5, -0.1, 0.0, 0.2],      # 加速度の更新（バネの復元力、抵抗、風の影響）
-            [0.0, 0.0, 0.0, 0.99],       # 風の減衰
-        ])
+        self.A = torch.tensor(
+            [
+                [1.0, dt, dt**2 / 2, 0.0],  # 位置の更新
+                [0.0, 1.0, dt, 0.0],  # 速度の更新
+                [-0.5, -0.1, 0.0, 0.2],  # 加速度の更新（バネの復元力、抵抗、風の影響）
+                [0.0, 0.0, 0.0, 0.99],  # 風の減衰
+            ]
+        )
         self.b = torch.tensor([0.0, 0.0, 0.0, 0.0])  # バイアス項
         self.Sigma_x = torch.tensor([0.1, 0.1, 0.1, 1.0]).diag() * dt  # プロセスノイズの共分散
 
@@ -155,7 +157,7 @@ class DiscreteODE(MarkovChain):
 
     @abc.abstractmethod
     def f(self, x: Tensor) -> Tensor:
-        r""" f(x) = \frac{dx}{dt}
+        r"""f(x) = \frac{dx}{dt}
 
         微分方程式の右辺（時間微分）を定義
         各具体的なシステムで実装される
@@ -184,7 +186,7 @@ class Lorenz63(DiscreteODE):
     def __init__(
         self,
         sigma: float = 10.0,  # プラントル数：流体の粘性と熱拡散の比 [9, 13]
-        rho: float = 28.0,    # レイリー数：浮力と粘性の比 [28, 40]
+        rho: float = 28.0,  # レイリー数：浮力と粘性の比 [28, 40]
         beta: float = 8 / 3,  # 幾何学的なパラメータ [1, 3]
         **kwargs,
     ):
@@ -195,21 +197,26 @@ class Lorenz63(DiscreteODE):
     def prior(self, shape: Size = ()) -> Tensor:
         # アトラクタ付近の初期分布から開始
         mu = torch.tensor([0.0, 0.0, 25.0])  # アトラクタの中心付近
-        sigma = torch.tensor([
-            [64.0, 50.0,  0.0],
-            [50.0, 81.0,  0.0],
-            [ 0.0,  0.0, 75.0],
-        ])
+        sigma = torch.tensor(
+            [
+                [64.0, 50.0, 0.0],
+                [50.0, 81.0, 0.0],
+                [0.0, 0.0, 75.0],
+            ]
+        )
 
         return MultivariateNormal(mu, sigma).sample(shape)
 
     def f(self, x: Tensor) -> Tensor:
         # ローレンツ方程式の時間微分
-        return torch.stack((
-            self.sigma * (x[..., 1] - x[..., 0]),                      # dx/dt
-            x[..., 0] * (self.rho - x[..., 2]) - x[..., 1],            # dy/dt
-            x[..., 0] * x[..., 1] - self.beta * x[..., 2],             # dz/dt
-        ), dim=-1)
+        return torch.stack(
+            (
+                self.sigma * (x[..., 1] - x[..., 0]),  # dx/dt
+                x[..., 0] * (self.rho - x[..., 2]) - x[..., 1],  # dy/dt
+                x[..., 0] * x[..., 1] - self.beta * x[..., 2],  # dz/dt
+            ),
+            dim=-1,
+        )
 
     @staticmethod
     def preprocess(x: Tensor) -> Tensor:
@@ -235,9 +242,9 @@ class NoisyLorenz63(Lorenz63):
     決定論的なローレンツ系にガウシアンノイズを追加
     """
 
-    def moments(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+    def moments(self, x: Tensor) -> tuple[Tensor, Tensor]:
         # 遷移の平均（決定論的な遷移）と標準偏差（時間ステップに依存）
-        return super().transition(x), self.dt ** 0.5
+        return super().transition(x), self.dt**0.5
 
     def transition(self, x: Tensor) -> Tensor:
         # 正規分布に基づく確率的遷移
@@ -260,8 +267,8 @@ class Lorenz96(DiscreteODE):
 
     def __init__(
         self,
-        n: int = 32,       # 状態空間の次元数（緯度方向の格子点数）
-        F: float = 16.0,   # 外部強制項（大気加熱を表現）
+        n: int = 32,  # 状態空間の次元数（緯度方向の格子点数）
+        F: float = 16.0,  # 外部強制項（大気加熱を表現）
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -292,10 +299,10 @@ class LotkaVolterra(DiscreteODE):
 
     def __init__(
         self,
-        alpha: float = 1.0,   # 被食者の増殖率
-        beta: float = 1.0,    # 捕食率
-        delta: float = 1.0,   # 捕食者の増殖効率
-        gamma: float = 1.0,   # 捕食者の死亡率
+        alpha: float = 1.0,  # 被食者の増殖率
+        beta: float = 1.0,  # 捕食率
+        delta: float = 1.0,  # 捕食者の増殖効率
+        gamma: float = 1.0,  # 捕食者の死亡率
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -309,10 +316,13 @@ class LotkaVolterra(DiscreteODE):
 
     def f(self, x: Tensor) -> Tensor:
         # 対数空間での動力学（数値安定性向上）
-        return torch.stack((
-            self.alpha - self.beta * x[..., 1].exp(),      # 被食者の増減
-            self.delta * x[..., 0].exp() - self.gamma,     # 捕食者の増減
-        ), dim=-1)
+        return torch.stack(
+            (
+                self.alpha - self.beta * x[..., 1].exp(),  # 被食者の増減
+                self.delta * x[..., 0].exp() - self.gamma,  # 捕食者の増減
+            ),
+            dim=-1,
+        )
 
 
 class KolmogorovFlow(MarkovChain):
@@ -328,8 +338,8 @@ class KolmogorovFlow(MarkovChain):
 
     def __init__(
         self,
-        size: int = 256,      # グリッドサイズ（解像度）
-        dt: float = 0.01,     # 時間ステップ
+        size: int = 256,  # グリッドサイズ（解像度）
+        dt: float = 0.01,  # 時間ステップ
         reynolds: int = 1e3,  # レイノルズ数（慣性力と粘性力の比）
     ):
         super().__init__()
@@ -346,10 +356,10 @@ class KolmogorovFlow(MarkovChain):
         # コルモゴロフ強制：特定の波数での外部エネルギー注入
         forcing = cfd.forcings.simple_turbulence_forcing(
             grid=grid,
-            constant_magnitude=1.0,     # 強制の強さ
-            constant_wavenumber=4.0,    # エネルギー注入する波数
-            linear_coefficient=-0.1,    # 線形減衰
-            forcing_type='kolmogorov',
+            constant_magnitude=1.0,  # 強制の強さ
+            constant_wavenumber=4.0,  # エネルギー注入する波数
+            linear_coefficient=-0.1,  # 線形減衰
+            forcing_type="kolmogorov",
         )
 
         # 数値安定性できない最小時間ステップ計算（CFL条件: 時間ステップΔtの間に、流体が1グリッド以上移動してはいけない）
@@ -371,11 +381,11 @@ class KolmogorovFlow(MarkovChain):
             f=cfd.equations.semi_implicit_navier_stokes(
                 grid=grid,
                 forcing=forcing,
-                dt=dt / steps, # サブステップごとの時間ステップ
+                dt=dt / steps,  # サブステップごとの時間ステップ
                 density=1.0,
                 viscosity=1 / reynolds,
             ),
-            steps=steps, # サブステップ数
+            steps=steps,  # サブステップ数
         )
 
         def prior(key: rng.PRNGKey) -> jax.Array:
@@ -403,8 +413,8 @@ class KolmogorovFlow(MarkovChain):
             return jnp.stack((u.data, v.data))
 
         # JAXのJITコンパイルとベクトル化で高速化
-        self._prior = jax.jit(jnp.vectorize(prior, signature='(K)->(C,H,W)'))
-        self._transition = jax.jit(jnp.vectorize(transition, signature='(C,H,W)->(C,H,W)'))
+        self._prior = jax.jit(jnp.vectorize(prior, signature="(K)->(C,H,W)"))
+        self._transition = jax.jit(jnp.vectorize(transition, signature="(C,H,W)->(C,H,W)"))
 
     def prior(self, shape: Size = ()) -> Tensor:
         # ランダムシードを生成してJAXの乱数キーに変換
@@ -442,12 +452,12 @@ class KolmogorovFlow(MarkovChain):
         return x
 
     @staticmethod
-    def upsample(x: Tensor, r: int = 2, mode: str = 'bilinear') -> Tensor:
+    def upsample(x: Tensor, r: int = 2, mode: str = "bilinear") -> Tensor:
         # 画像のアップサンプリング（周期境界条件を考慮）
         *batch, h, w = x.shape
 
         x = x.reshape(-1, 1, h, w)
-        x = torch.nn.functional.pad(x, pad=(1, 1, 1, 1), mode='circular')  # 周期境界でパディング
+        x = torch.nn.functional.pad(x, pad=(1, 1, 1, 1), mode="circular")  # 周期境界でパディング
         x = torch.nn.functional.interpolate(x, scale_factor=(r, r), mode=mode)  # 補間
         x = x[..., r:-r, r:-r]  # パディング部分を削除
         x = x.reshape(*batch, r * h, r * w)
@@ -461,11 +471,11 @@ class KolmogorovFlow(MarkovChain):
         *batch, _, h, w = x.shape
 
         y = x.reshape(-1, 2, h, w)
-        y = torch.nn.functional.pad(y, pad=(1, 1, 1, 1), mode='circular')  # 周期境界
+        y = torch.nn.functional.pad(y, pad=(1, 1, 1, 1), mode="circular")  # 周期境界
 
         # 速度成分の空間微分を計算
-        du, = torch.gradient(y[:, 0], dim=-1)  # u成分のx方向微分
-        dv, = torch.gradient(y[:, 1], dim=-2)  # v成分のy方向微分
+        (du,) = torch.gradient(y[:, 0], dim=-1)  # u成分のx方向微分
+        (dv,) = torch.gradient(y[:, 1], dim=-2)  # v成分のy方向微分
 
         # 渦度 = dv/dx - du/dy (回転の測度)
         y = du - dv

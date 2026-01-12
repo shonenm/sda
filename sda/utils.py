@@ -1,7 +1,6 @@
 r"""Helpers"""
 
 import functools
-import h5py
 import json
 import math
 import os
@@ -9,9 +8,17 @@ import random
 import socket
 import time
 import traceback
-import torch
-import urllib.request
 import urllib.error
+import urllib.request
+from collections.abc import Callable, Iterator, Sequence
+from pathlib import Path
+from typing import Any
+
+import h5py
+import torch
+from torch import Tensor
+from torch.utils.data import DataLoader, Dataset
+from tqdm import trange
 
 # Optional import for Optimal Transport (used for W2 distance computation)
 try:
@@ -19,24 +26,18 @@ try:
 except ImportError:
     ot = None
 
-from pathlib import Path
-from torch import Tensor
-from torch.utils.data import Dataset, DataLoader
-from tqdm import trange
-from typing import *
-
-from .score import *
-
+from .score import VPSDE
 
 # =============================================================================
 # Slack通知機能
 # =============================================================================
 
+
 def slack_notify(
     message: str,
-    webhook_url: str = None,
-    username: str = None,
-    icon_emoji: str = ':robot_face:',
+    webhook_url: str | None = None,
+    username: str | None = None,
+    icon_emoji: str = ":robot_face:",
 ) -> bool:
     """Slackにメッセージを送信
 
@@ -52,24 +53,26 @@ def slack_notify(
     Returns:
         送信成功時True、失敗または未設定時False
     """
-    url = webhook_url or os.environ.get('SLACK_WEBHOOK_URL')
+    url = webhook_url or os.environ.get("SLACK_WEBHOOK_URL")
     if not url:
         return False
 
     if username is None:
         username = f"sda@{socket.gethostname()}"
 
-    payload = json.dumps({
-        'text': message,
-        'username': username,
-        'icon_emoji': icon_emoji,
-    }).encode('utf-8')
+    payload = json.dumps(
+        {
+            "text": message,
+            "username": username,
+            "icon_emoji": icon_emoji,
+        }
+    ).encode("utf-8")
 
     try:
         req = urllib.request.Request(
             url,
             data=payload,
-            headers={'Content-Type': 'application/json'},
+            headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status == 200
@@ -78,8 +81,8 @@ def slack_notify(
 
 
 def slack_on_complete(
-    success_msg: str = None,
-    error_msg: str = None,
+    success_msg: str | None = None,
+    error_msg: str | None = None,
     include_traceback: bool = True,
 ):
     """関数完了時にSlack通知を送るデコレータ
@@ -100,6 +103,7 @@ def slack_on_complete(
         def my_job():
             ...
     """
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -136,6 +140,7 @@ def slack_on_complete(
                 raise
 
         return wrapper
+
     return decorator
 
 
@@ -153,9 +158,9 @@ def _format_duration(seconds: float) -> str:
 
 
 def load_env_for_slurm(
-    keys: List[str],
-    env_file: Path = None,
-) -> List[str]:
+    keys: list[str],
+    env_file: Path | None = None,
+) -> list[str]:
     """指定したキーの環境変数をSLURM用のexport文として取得
 
     以下の順序で値を探す:
@@ -174,7 +179,7 @@ def load_env_for_slurm(
         # このファイルの親ディレクトリから上に向かって.envを探す
         current = Path(__file__).resolve().parent
         for _ in range(5):  # 最大5階層上まで
-            candidate = current / '.env'
+            candidate = current / ".env"
             if candidate.exists():
                 env_file = candidate
                 break
@@ -186,13 +191,14 @@ def load_env_for_slurm(
         with open(env_file) as f:
             for line in f:
                 line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, _, value = line.partition('=')
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
                     key = key.strip()
                     value = value.strip()
                     # クォートを除去
-                    if (value.startswith('"') and value.endswith('"')) or \
-                       (value.startswith("'") and value.endswith("'")):
+                    if (value.startswith('"') and value.endswith('"')) or (
+                        value.startswith("'") and value.endswith("'")
+                    ):
                         value = value[1:-1]
                     env_from_file[key] = value
 
@@ -200,10 +206,10 @@ def load_env_for_slurm(
     exports = []
     for key in keys:
         # 現在の環境変数を優先、なければ.envから
-        value = os.environ.get(key) or env_from_file.get(key, '')
+        value = os.environ.get(key) or env_from_file.get(key, "")
         if value:
             # シェルエスケープ（シンプル版）
-            escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
             exports.append(f'export {key}="{escaped}"')
 
     return exports
@@ -212,15 +218,15 @@ def load_env_for_slurm(
 # =============================================================================
 # 利用可能な活性化関数の辞書
 ACTIVATIONS = {
-    'ReLU': torch.nn.ReLU,
-    'ELU': torch.nn.ELU,
-    'GELU': torch.nn.GELU,
-    'SELU': torch.nn.SELU,
-    'SiLU': torch.nn.SiLU,
+    "ReLU": torch.nn.ReLU,
+    "ELU": torch.nn.ELU,
+    "GELU": torch.nn.GELU,
+    "SELU": torch.nn.SELU,
+    "SiLU": torch.nn.SiLU,
 }
 
 
-def random_config(configs: Dict[str, Sequence[Any]]) -> Dict[str, Any]:
+def random_config(configs: dict[str, Sequence[Any]]) -> dict[str, Any]:
     """ランダムなハイパーパラメータ設定を生成
 
     各パラメータの候補リストからランダムに選択
@@ -232,24 +238,21 @@ def random_config(configs: Dict[str, Sequence[Any]]) -> Dict[str, Any]:
     Returns:
         ランダムに選択されたパラメータの辞書
     """
-    return {
-        key: random.choice(values)
-        for key, values in configs.items()
-    }
+    return {key: random.choice(values) for key, values in configs.items()}
 
 
-def save_config(config: Dict[str, Any], path: Path) -> None:
+def save_config(config: dict[str, Any], path: Path) -> None:
     """設定をJSONファイルとして保存
 
     Args:
         config: 保存する設定の辞書
         path: 保存先のディレクトリパス
     """
-    with open(path / 'config.json', mode='x') as f:
+    with open(path / "config.json", mode="x") as f:
         json.dump(config, f)
 
 
-def load_config(path: Path) -> Dict[str, Any]:
+def load_config(path: Path) -> dict[str, Any]:
     """JSONファイルから設定を読み込む
 
     Args:
@@ -258,7 +261,7 @@ def load_config(path: Path) -> Dict[str, Any]:
     Returns:
         読み込んだ設定の辞書
     """
-    with open(path / 'config.json', mode='r') as f:
+    with open(path / "config.json") as f:
         return json.load(f)
 
 
@@ -296,15 +299,15 @@ class TrajectoryDataset(Dataset):
 
     def __init__(
         self,
-        file: Path,             # HDF5データファイルのパス
-        window: int = None,     # 時間窓のサイズ（Noneの場合は全系列を使用）
+        file: Path,  # HDF5データファイルのパス
+        window: int | None = None,  # 時間窓のサイズ（Noneの場合は全系列を使用）
         flatten: bool = False,  # 時間軸とチャネル軸をフラット化するか
     ):
         super().__init__()
 
         # HDF5ファイルから軌跡データを読み込む
-        with h5py.File(file, mode='r') as f:
-            self.data = f['x'][:]  # 形状: (N_trajectories, T, ...)
+        with h5py.File(file, mode="r") as f:
+            self.data = f["x"][:]  # 形状: (N_trajectories, T, ...)
 
         self.window = window
         self.flatten = flatten
@@ -313,7 +316,7 @@ class TrajectoryDataset(Dataset):
         # データセットのサイズ（軌跡の数）
         return len(self.data)
 
-    def __getitem__(self, i: int) -> Tuple[Tensor, Dict]:
+    def __getitem__(self, i: int) -> tuple[Tensor, dict]:
         # i番目の軌跡を取得
         x = torch.from_numpy(self.data[i])
 
@@ -330,17 +333,17 @@ class TrajectoryDataset(Dataset):
 
 
 def loop(
-    sde: VPSDE,                        # 学習するSDEモデル
-    trainset: Dataset,                 # 訓練データセット
-    validset: Dataset,                 # 検証データセット
-    epochs: int = 256,                 # エポック数
-    batch_size: int = 64,              # バッチサイズ
-    optimizer: str = 'AdamW',          # オプティマイザの種類
-    learning_rate: float = 1e-3,       # 学習率
-    weight_decay: float = 1e-3,        # 重み減衰
-    scheduler: float = 'linear',       # 学習率スケジューラ
-    device: str = 'cpu',               # デバイス（'cpu' or 'cuda'）
-    **absorb,                          # その他の引数を吸収
+    sde: VPSDE,  # 学習するSDEモデル
+    trainset: Dataset,  # 訓練データセット
+    validset: Dataset,  # 検証データセット
+    epochs: int = 256,  # エポック数
+    batch_size: int = 64,  # バッチサイズ
+    optimizer: str = "AdamW",  # オプティマイザの種類
+    learning_rate: float = 1e-3,  # 学習率
+    weight_decay: float = 1e-3,  # 重み減衰
+    scheduler: float = "linear",  # 学習率スケジューラ
+    device: str = "cpu",  # デバイス（'cpu' or 'cuda'）
+    **absorb,  # その他の引数を吸収
 ) -> Iterator:
     """SDEモデルの学習ループ
 
@@ -355,7 +358,7 @@ def loop(
     validloader = DataLoader(validset, batch_size=batch_size, shuffle=True, num_workers=1, persistent_workers=True)
 
     # オプティマイザの設定
-    if optimizer == 'AdamW':
+    if optimizer == "AdamW":
         optimizer = torch.optim.AdamW(
             sde.parameters(),
             lr=learning_rate,
@@ -365,13 +368,13 @@ def loop(
         raise ValueError()
 
     # 学習率スケジューラの設定
-    if scheduler == 'linear':
+    if scheduler == "linear":
         # 線形減衰
         lr = lambda t: 1 - (t / epochs)
-    elif scheduler == 'cosine':
+    elif scheduler == "cosine":
         # コサイン減衰（より滑らかな減衰）
         lr = lambda t: (1 + math.cos(math.pi * t / epochs)) / 2
-    elif scheduler == 'exponential':
+    elif scheduler == "exponential":
         # 指数減衰
         lr = lambda t: math.exp(-7 * (t / epochs) ** 2)
     else:
@@ -411,7 +414,7 @@ def loop(
         ## 統計情報の計算と表示
         loss_train = torch.stack(losses_train).mean().item()
         loss_valid = torch.stack(losses_valid).mean().item()
-        lr = optimizer.param_groups[0]['lr']
+        lr = optimizer.param_groups[0]["lr"]
 
         # 結果をyield（ジェネレータとして動作）
         yield loss_train, loss_valid, lr
@@ -535,7 +538,7 @@ def mmd(
 
     err_xx = dxx + dxx.T - 2 * xx  # p(x)内のペア距離
     err_yy = dyy + dyy.T - 2 * yy  # q(y)内のペア距離
-    err_xy = dxx + dyy - 2 * xy    # p(x)とq(y)間のペア距離
+    err_xy = dxx + dyy - 2 * xy  # p(x)とq(y)間のペア距離
 
     mmd = 0
 

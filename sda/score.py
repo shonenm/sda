@@ -1,15 +1,15 @@
 r"""Score modules"""
 
 import math
+from collections.abc import Callable
+
 import torch
 import torch.nn as nn
-
 from torch import Size, Tensor
 from tqdm import tqdm
-from typing import *
 from zuko.utils import broadcast
 
-from .nn import *
+from .nn import ResMLP, UNet
 
 
 class TimeEmbedding(nn.Sequential):
@@ -26,13 +26,13 @@ class TimeEmbedding(nn.Sequential):
 
     def __init__(self, features: int):
         super().__init__(
-            nn.Linear(32, 256),      # 32次元 -> 256次元
-            nn.SiLU(),               # Swish活性化関数
-            nn.Linear(256, features), # 256次元 -> 出力次元
+            nn.Linear(32, 256),  # 32次元 -> 256次元
+            nn.SiLU(),  # Swish活性化関数
+            nn.Linear(256, features),  # 256次元 -> 出力次元
         )
 
         # 16種類の周波数を用意（正弦波エンコーディング用）
-        self.register_buffer('freqs', torch.pi * torch.arange(1, 16 + 1))
+        self.register_buffer("freqs", torch.pi * torch.arange(1, 16 + 1))
 
     def forward(self, t: Tensor) -> Tensor:
         # 各周波数で正弦波・余弦波を計算
@@ -70,7 +70,7 @@ class ScoreNet(nn.Module):
         t: 拡散時間（0〜1）。TimeEmbeddingで [B, embedding] に変換。
         c: 任意の文脈（条件）。例：観測特徴、物理パラメータ等（shape: [B, C]）
         """
-        
+
         # 時刻を埋め込み表現に変換
         t = self.embedding(t)
 
@@ -142,17 +142,16 @@ class MCScoreWrapper(nn.Module):
     ) -> Tensor:
         # 時系列軸とチャネル軸を交換: (B, L, C, H, W) -> (B, C, L, H, W)
         # これによりLをチャネルとして扱える
-        
+
         # PyTorch の畳み込み層（例：nn.Conv2d）は、常に次のようなテンソル形を前提としている：
         # 入力テンソル: (B, C, H, W)
-            # B: バッチ数
-            # C: チャネル数（特徴の種類）
-            # H, W: 空間サイズ
+        # B: バッチ数
+        # C: チャネル数（特徴の種類）
+        # H, W: 空間サイズ
         # Markov Chain の時系列データは (B, L, C, H, W)
         # どのみち二つ目の次元が L × C として扱われるためそこに意味はないが、重みをかける組み合わせが変わるらしい
         # L と C を入れ替えることで L をチャネル数として扱えるようにする。
-        
-        
+
         return self.score(x.transpose(1, 2), t, c).transpose(1, 2)
 
 
@@ -175,7 +174,7 @@ class MCScoreNet(nn.Module):
         self.order = order
 
         # 空間次元があればUNet、なければMLPを使用
-        if kwargs.get('spatial', 0) > 0:
+        if kwargs.get("spatial", 0) > 0:
             build = ScoreUNet
         else:
             build = ScoreNet
@@ -229,8 +228,8 @@ class MCScoreNet(nn.Module):
     def unfold(x: Tensor, order: int) -> Tensor:
         # 時間軸に沿って2*order+1個の窓をスライド
         x = x.unfold(1, 2 * order + 1, 1)  # (B, L-2*order, C, H, W, 2*order+1)
-        x = x.movedim(-1, 2)                # (B, L-2*order, 2*order+1, C, H, W)
-        x = x.flatten(2, 3)                 # (B, L-2*order, (2*order+1)*C, H, W)
+        x = x.movedim(-1, 2)  # (B, L-2*order, 2*order+1, C, H, W)
+        x = x.flatten(2, 3)  # (B, L-2*order, (2*order+1)*C, H, W)
 
         return x
 
@@ -238,14 +237,17 @@ class MCScoreNet(nn.Module):
     @torch.jit.script_if_tracing
     def fold(x: Tensor, order: int) -> Tensor:
         # 展開した形状から元の時系列長に戻す
-        x = x.unflatten(2, (2 * order  + 1, -1))
+        x = x.unflatten(2, (2 * order + 1, -1))
 
         # 先頭order個、中央部分、末尾order個を連結
-        return torch.cat((
-            x[:, 0, :order],      # 最初の窓から先頭order個
-            x[:, :, order],       # 各窓の中央（order番目）
-            x[:, -1, -order:],    # 最後の窓から末尾order個
-        ), dim=1)
+        return torch.cat(
+            (
+                x[:, 0, :order],  # 最初の窓から先頭order個
+                x[:, :, order],  # 各窓の中央（order番目）
+                x[:, -1, -order:],  # 最後の窓から末尾order個
+            ),
+            dim=1,
+        )
 
 
 class VPSDE(nn.Module):
@@ -270,7 +272,7 @@ class VPSDE(nn.Module):
         self,
         eps: nn.Module,
         shape: Size,
-        alpha: str = 'cos',
+        alpha: str = "cos",
         eta: float = 1e-3,
     ):
         super().__init__()
@@ -281,19 +283,19 @@ class VPSDE(nn.Module):
         self.eta = eta  # 数値安定性項
 
         # ノイズスケジュール関数の選択
-        if alpha == 'lin':
+        if alpha == "lin":
             # 線形スケジュール
             self.alpha = lambda t: 1 - (1 - eta) * t
-        elif alpha == 'cos':
+        elif alpha == "cos":
             # コサインスケジュール（より滑らかな減衰）
             self.alpha = lambda t: torch.cos(math.acos(math.sqrt(eta)) * t) ** 2
-        elif alpha == 'exp':
+        elif alpha == "exp":
             # 指数スケジュール
             self.alpha = lambda t: torch.exp(math.log(eta) * t**2)
         else:
             raise ValueError()
 
-        self.register_buffer('device', torch.empty(()))
+        self.register_buffer("device", torch.empty(()))
 
     def mu(self, t: Tensor) -> Tensor:
         # 時刻tでの平均係数（信号の減衰）
@@ -302,7 +304,7 @@ class VPSDE(nn.Module):
     def sigma(self, t: Tensor) -> Tensor:
         # 時刻tでのノイズの標準偏差
         # 分散保存：信号^2 + ノイズ^2 ≈ 1 を維持
-        return (1 - self.alpha(t) ** 2 + self.eta ** 2).sqrt()
+        return (1 - self.alpha(t) ** 2 + self.eta**2).sqrt()
 
     def forward(self, x: Tensor, t: Tensor, train: bool = False) -> Tensor:
         r"""Samples from the perturbation kernel :math:`p(x(t) | x)`.
@@ -434,9 +436,9 @@ class DPSGaussianScore(nn.Module):
     ガウシアン逆問題のためのスコアモジュール（DPS法）
     観測yから未知のxを推定する問題（例：デノイジング、超解像）
     DPS（Diffusion Posterior Sampling）
-    
+
     -sigma(t) · s(x(t), t | y)（＝“負のσ倍の事後スコア”）を返す形
-    
+
     Chung+ (2022) の DPS の考え方で、観測とのズレの勾配をノルムで正規化してガイドする
 
     .. math:: p(y | x) = N(y | A(x), Σ)
@@ -451,14 +453,14 @@ class DPSGaussianScore(nn.Module):
 
     def __init__(
         self,
-        y: Tensor,                            # 観測データ
-        A: Callable[[Tensor], Tensor],        # 順問題の演算子（例：ダウンサンプリング）
-        sde: VPSDE,                           # ベースとなるSDE
-        zeta: float = 1.0,                    # ガイダンスの強さ
+        y: Tensor,  # 観測データ
+        A: Callable[[Tensor], Tensor],  # 順問題の演算子（例：ダウンサンプリング）
+        sde: VPSDE,  # ベースとなるSDE
+        zeta: float = 1.0,  # ガイダンスの強さ
     ):
         super().__init__()
 
-        self.register_buffer('y', y)
+        self.register_buffer("y", y)
 
         self.A = A
         self.sde = sde
@@ -478,7 +480,7 @@ class DPSGaussianScore(nn.Module):
             err = (self.y - self.A(x_)).square().sum()
 
         # 誤差に対する勾配（データ忠実度項）
-        s, = torch.autograd.grad(err, x)
+        (s,) = torch.autograd.grad(err, x)
         s = -s * self.zeta / err.sqrt()  # 正規化されたガイダンス
 
         # 事前分布のスコアとデータ忠実度を組み合わせ
@@ -512,19 +514,19 @@ class GaussianScore(nn.Module):
 
     def __init__(
         self,
-        y: Tensor,                            # 観測データ
-        A: Callable[[Tensor], Tensor],        # 順問題の演算子
-        std: Union[float, Tensor],            # 観測ノイズの標準偏差
-        sde: VPSDE,                           # ベースとなるSDE
-        gamma: Union[float, Tensor] = 1e-2,   # ノイズ分散の調整係数
-        detach: bool = False,                 # 勾配の切断フラグ
-        normalize: bool = False,              # 観測点数で正規化（高解像度向け）
+        y: Tensor,  # 観測データ
+        A: Callable[[Tensor], Tensor],  # 順問題の演算子
+        std: float | Tensor,  # 観測ノイズの標準偏差
+        sde: VPSDE,  # ベースとなるSDE
+        gamma: float | Tensor = 1e-2,  # ノイズ分散の調整係数
+        detach: bool = False,  # 勾配の切断フラグ
+        normalize: bool = False,  # 観測点数で正規化（高解像度向け）
     ):
         super().__init__()
 
-        self.register_buffer('y', y)
-        self.register_buffer('std', torch.as_tensor(std))
-        self.register_buffer('gamma', torch.as_tensor(gamma))
+        self.register_buffer("y", y)
+        self.register_buffer("std", torch.as_tensor(std))
+        self.register_buffer("gamma", torch.as_tensor(gamma))
 
         self.A = A
         self.sde = sde
@@ -550,18 +552,18 @@ class GaussianScore(nn.Module):
 
             # 観測誤差と分散（時刻に依存）
             err = self.y - self.A(x_)
-            var = self.std ** 2 + self.gamma * (sigma / mu) ** 2
+            var = self.std**2 + self.gamma * (sigma / mu) ** 2
 
             # 対数尤度
             # normalize=True: .mean()で観測点数に依存しない勾配スケール
             # normalize=False: .sum()で後方互換性を維持
             if self.normalize:
-                log_p = -(err ** 2 / var).mean() / 2
+                log_p = -(err**2 / var).mean() / 2
             else:
-                log_p = -(err ** 2 / var).sum() / 2
+                log_p = -(err**2 / var).sum() / 2
 
         # 対数尤度の勾配
-        s, = torch.autograd.grad(log_p, x)
+        (s,) = torch.autograd.grad(log_p, x)
 
         # 事前分布とデータ尤度を組み合わせた修正スコア
         # eps は「事前側」から来る方向（拡散の denoise）。

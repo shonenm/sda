@@ -17,10 +17,10 @@ Directory Structure:
     └── .dawgz/         # DAWGZ job files (auto-managed)
 """
 
-from pathlib import Path
 import os
+from pathlib import Path
 
-__all__ = ['get_project_root', 'get_runs_dir', 'get_results_dir', 'get_data_dir', 'get_docs_dir']
+__all__ = ["get_data_dir", "get_docs_dir", "get_project_root", "get_results_dir", "get_runs_dir"]
 
 
 def get_project_root() -> Path:
@@ -31,8 +31,8 @@ def get_project_root() -> Path:
         - If SCRATCH env var is set: {SCRATCH}/sda
         - Otherwise: parent of sda package (this file's parent.parent)
     """
-    if 'SCRATCH' in os.environ:
-        root = Path(os.environ['SCRATCH']) / 'sda'
+    if "SCRATCH" in os.environ:
+        root = Path(os.environ["SCRATCH"]) / "sda"
     else:
         # sda/paths.py -> sda/ -> project root
         root = Path(__file__).parent.parent
@@ -47,7 +47,7 @@ def get_runs_dir() -> Path:
     Returns:
         Path to runs/ directory for storing training checkpoints.
     """
-    runs_dir = get_project_root() / 'runs'
+    runs_dir = get_project_root() / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     return runs_dir
 
@@ -62,7 +62,7 @@ def get_results_dir(experiment: str | None = None) -> Path:
     Returns:
         Path to results/{experiment}/ directory.
     """
-    results_dir = get_project_root() / 'results'
+    results_dir = get_project_root() / "results"
     if experiment:
         results_dir = results_dir / experiment
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -81,7 +81,7 @@ def get_data_dir(experiment: str) -> Path:
     Returns:
         Path to data/{experiment}/ directory.
     """
-    data_dir = get_project_root() / 'data' / experiment
+    data_dir = get_project_root() / "data" / experiment
     return data_dir
 
 
@@ -95,7 +95,7 @@ def get_docs_dir(experiment: str | None = None) -> Path:
     Returns:
         Path to docs/{experiment}/ directory.
     """
-    docs_dir = get_project_root() / 'docs'
+    docs_dir = get_project_root() / "docs"
     if experiment:
         docs_dir = docs_dir / experiment
     docs_dir.mkdir(parents=True, exist_ok=True)
