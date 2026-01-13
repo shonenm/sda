@@ -7,9 +7,13 @@ Usage:
     python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode sample
     python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode sparse
     python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode debug
+    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode generalization
 """
 
 import argparse
+import json
+from datetime import datetime
+from typing import Dict, List, Tuple
 
 import matplotlib
 
@@ -26,8 +30,119 @@ from experiments.ibpm.utils import (
     plot_velocity_and_vorticity,
 )
 from sda.data.ibpm_dataset import IBPMDataset, IBPMNormalizer, build_cylinder_mask, build_inflow_profile
-from sda.paths import get_results_dir
+from sda.paths import get_results_dir, get_run_results_dir
 from sda.score import VPSDE
+
+# ============================================================================
+# 条件テンソルの円柱位置設定
+# ============================================================================
+# 学習時の設定:
+#   - データ内の実際の円柱位置: (99, 49) ピクセル
+#   - 条件テンソルの円柱位置: (63.5, 63.5) ピクセル (IBPMDataset デフォルト)
+#   - オフセット: データ - 条件 = (35.5, -14.5)
+#
+# 評価時も同じオフセットを維持することで、学習時と一貫した入力を与える。
+# 詳細: docs/ibpm_generalization_experiment.md
+# ============================================================================
+TRAIN_COND_CENTER = (63.5, 63.5)  # 学習時の条件テンソル円柱位置
+TRAIN_COND_RADIUS = 15.875        # 学習時の条件テンソル円柱半径 (127x127用デフォルト)
+TRAIN_DATA_CENTER = (99.0, 49.0)  # 学習データ内の実際の円柱位置
+COND_OFFSET = (35.5, -14.5)       # データ位置 - 条件位置
+
+
+def get_condition_center_for_data(data_cylinder_y_pixel: float) -> tuple:
+    """データ内の円柱y位置から条件テンソルの中心を計算
+
+    学習時のオフセットを維持する。
+
+    Args:
+        data_cylinder_y_pixel: データ内の円柱のyピクセル位置
+
+    Returns:
+        (cx, cy): 条件テンソルの円柱中心位置
+    """
+    # 条件 = データ位置 - オフセット
+    return (TRAIN_COND_CENTER[0], data_cylinder_y_pixel + COND_OFFSET[1])
+
+
+# ============================================================================
+# 物理座標 ↔ ピクセル座標変換
+# ============================================================================
+# IBPM wide_centered シミュレーション設定:
+#   - nx=400, ny=200, length=16, xoffset=-4, yoffset=-4
+#   - 物理領域: x ∈ [-4, 12], y ∈ [-4, 4]
+#   - 出力解像度: 399 x 199 (境界を除く)
+# ============================================================================
+
+def physical_to_pixel_y(
+    y_physical: float,
+    H: int = 199,
+    yoffset: float = -4.0,
+    ylength: float = 8.0
+) -> float:
+    """物理座標yをピクセル座標に変換
+
+    Args:
+        y_physical: 物理座標でのy位置
+        H: 画像の高さ（ピクセル）
+        yoffset: シミュレーション領域のy下端
+        ylength: シミュレーション領域のy方向長さ
+
+    Returns:
+        ピクセル座標でのy位置
+    """
+    dy = ylength / H
+    return (y_physical - yoffset) / dy
+
+
+def physical_to_pixel_radius(
+    r_physical: float,
+    H: int = 199,
+    ylength: float = 8.0
+) -> float:
+    """物理半径をピクセル半径に変換
+
+    Args:
+        r_physical: 物理座標での半径
+        H: 画像の高さ（ピクセル）
+        ylength: シミュレーション領域のy方向長さ
+
+    Returns:
+        ピクセル座標での半径
+    """
+    dy = ylength / H
+    return r_physical / dy
+
+
+# ============================================================================
+# 汎化テスト用データパスとパラメータのマッピング
+# ============================================================================
+# 各ジオメトリ設定に対応するシミュレーションデータディレクトリ
+GEOMETRY_DATA_PATHS = {
+    "baseline": "ibpm_h5_wide_centered",
+    "y_m01": "ibpm_h5_gen_cylinder_y_m01",
+    "y_m02": "ibpm_h5_gen_cylinder_y_m02",
+    "y_p02": "ibpm_h5_gen_cylinder_y_p02",
+    "r_04": "ibpm_h5_gen_cylinder_r04",
+    "r_06": "ibpm_h5_gen_cylinder_r06",
+}
+
+# 各ジオメトリ設定の物理パラメータ
+GEOMETRY_PARAMS = {
+    "baseline": {"y": -2.0, "radius": 0.5},
+    "y_m01": {"y": -2.1, "radius": 0.5},
+    "y_m02": {"y": -2.2, "radius": 0.5},
+    "y_p02": {"y": -1.8, "radius": 0.5},
+    "r_04": {"y": -2.0, "radius": 0.4},
+    "r_06": {"y": -2.0, "radius": 0.6},
+}
+
+# Reynolds数テスト用データパス（Phase 2で生成予定）
+REYNOLDS_DATA_PATHS = {
+    "Re_080": "ibpm_h5_gen_Re80",
+    "Re_100": "ibpm_h5_wide_centered",  # baseline
+    "Re_120": "ibpm_h5_gen_Re120",
+}
 
 
 def visualize_data(data_path: Path, output_dir: Path) -> None:
@@ -204,7 +319,7 @@ def sparse_reconstruction(
     )
 
     # 幾何条件を生成
-    cylinder_mask = build_cylinder_mask(H, W, center=(100.0, 100.0), radius=12.5)
+    cylinder_mask = build_cylinder_mask(H, W, center=TRAIN_COND_CENTER, radius=TRAIN_COND_RADIUS)
     inflow_profile = build_inflow_profile(H, W, U=1.0)
     cond = torch.stack([cylinder_mask, inflow_profile], dim=0).unsqueeze(0).cuda()
 
@@ -342,7 +457,7 @@ def diffusion_trajectory(
     shape_flat = torch.Size((window * 2, H, W))
 
     # 幾何条件
-    cylinder_mask = build_cylinder_mask(H, W, center=(100.0, 100.0), radius=12.5)
+    cylinder_mask = build_cylinder_mask(H, W, center=TRAIN_COND_CENTER, radius=TRAIN_COND_RADIUS)
     inflow_profile = build_inflow_profile(H, W, U=1.0)
     cond = torch.stack([cylinder_mask, inflow_profile], dim=0).cuda()
 
@@ -636,7 +751,7 @@ def debug_model(
     window = config.get("window", 16)
 
     # 幾何条件
-    cylinder_mask = build_cylinder_mask(H, W, center=(100.0, 100.0), radius=12.5)
+    cylinder_mask = build_cylinder_mask(H, W, center=TRAIN_COND_CENTER, radius=TRAIN_COND_RADIUS)
     inflow_profile = build_inflow_profile(H, W, U=1.0)
     cond_kernel = torch.stack([cylinder_mask, inflow_profile], dim=0).cuda()
 
@@ -680,21 +795,769 @@ def debug_model(
     print("=" * 60)
 
 
-def main():
-    # デフォルト出力先: results/ibpm/evaluate/
-    default_output = get_results_dir("ibpm") / "evaluate"
+# =============================================================================
+# 汎化性能テスト (Generalization Tests)
+# =============================================================================
 
+
+def add_perturbation(x: torch.Tensor, noise_std: float) -> torch.Tensor:
+    """発達済み流れ場に微小擾乱を追加
+
+    Args:
+        x: 入力テンソル
+        noise_std: 追加するノイズの標準偏差
+
+    Returns:
+        擾乱を加えたテンソル
+    """
+    return x + torch.randn_like(x) * noise_std
+
+
+def compute_reconstruction_metrics(
+    x_recon_norm: torch.Tensor,
+    x_gt_norm: torch.Tensor,
+    normalizer: IBPMNormalizer,
+) -> dict:
+    """再構成結果の評価指標を計算
+
+    Args:
+        x_recon_norm: 再構成結果（正規化空間）
+        x_gt_norm: Ground Truth（正規化空間）
+        normalizer: 正規化用オブジェクト
+
+    Returns:
+        評価指標の辞書
+    """
+    # RMSE（正規化空間）
+    rmse = torch.sqrt(torch.mean((x_recon_norm - x_gt_norm) ** 2)).item()
+
+    # Energy Ratio（標準偏差の比率）
+    recon_std = x_recon_norm.std().item()
+    gt_std = x_gt_norm.std().item()
+    energy_ratio = recon_std / gt_std if gt_std > 0 else 0.0
+
+    # チャネル別RMSE
+    u_rmse = torch.sqrt(torch.mean((x_recon_norm[:, 0] - x_gt_norm[:, 0]) ** 2)).item()
+    v_rmse = torch.sqrt(torch.mean((x_recon_norm[:, 1] - x_gt_norm[:, 1]) ** 2)).item()
+
+    # 渦度RMSE（物理空間）
+    x_recon_phys = normalizer.denormalize(x_recon_norm)
+    x_gt_phys = normalizer.denormalize(x_gt_norm)
+    w_recon = compute_vorticity(x_recon_phys)
+    w_gt = compute_vorticity(x_gt_phys)
+    vorticity_rmse = torch.sqrt(torch.mean((w_recon - w_gt) ** 2)).item()
+
+    return {
+        "rmse": rmse,
+        "energy_ratio": energy_ratio,
+        "u_rmse": u_rmse,
+        "v_rmse": v_rmse,
+        "vorticity_rmse": vorticity_rmse,
+        "recon_std": recon_std,
+        "gt_std": gt_std,
+    }
+
+
+def generalization_grid_offset(
+    score: torch.nn.Module,
+    config: dict,
+    data_path: Path,
+    output_dir: Path,
+    subsample_rate: int = 4,
+    offsets: list[tuple[int, int]] = None,
+) -> dict:
+    """グリッドオフセットによる汎化テスト
+
+    観測グリッドの開始位置をずらして、モデルの汎化性能を評価
+
+    Args:
+        score: 学習済みスコアモデル
+        config: モデル設定
+        data_path: データパス
+        output_dir: 出力ディレクトリ
+        subsample_rate: サブサンプリングレート
+        offsets: テストするオフセットのリスト [(h_offset, w_offset), ...]
+
+    Returns:
+        テスト結果の辞書
+    """
+    from sda.score import GaussianScore
+
+    print("\n" + "=" * 60)
+    print("GENERALIZATION TEST: GRID OFFSET")
+    print("=" * 60)
+
+    if offsets is None:
+        # デフォルトオフセット（subsample_rate=4の場合）
+        offsets = [(0, 0), (1, 1), (2, 0), (0, 2), (2, 2)]
+
+    normalizer = IBPMNormalizer()
+    window = config.get("window", 16)
+
+    # テストデータをロード
+    test_data = load_ibpm_data(data_path, split="test")
+    n_timesteps = min(window, test_data.shape[1])
+    x_star_raw = test_data[0, :n_timesteps]
+    T, C, H, W = x_star_raw.shape
+
+    x_star_norm = normalizer.normalize(x_star_raw)
+    x_star_flat = x_star_norm.flatten(0, 1)
+
+    print(f"Test data shape: {x_star_raw.shape}")
+    print(f"Subsample rate: {subsample_rate}")
+    print(f"Testing offsets: {offsets}")
+
+    # 幾何条件
+    cylinder_mask = build_cylinder_mask(H, W, center=TRAIN_COND_CENTER, radius=TRAIN_COND_RADIUS)
+    inflow_profile = build_inflow_profile(H, W, U=1.0)
+    cond = torch.stack([cylinder_mask, inflow_profile], dim=0).unsqueeze(0).cuda()
+
+    # Clamped Linear Scalingパラメータ
+    BASE_STD = 0.2
+    BASE_GAMMA = 0.04
+    MIN_STD = 0.15
+    MIN_GAMMA = 0.02
+    n_obs_ref = (H // 4) * (W // 4) * T * C
+
+    sub = subsample_rate
+    n_obs = (H // sub) * (W // sub) * T * C
+    ratio = n_obs / n_obs_ref
+    std_scaled = max(BASE_STD * ratio, MIN_STD)
+    gamma_scaled = max(BASE_GAMMA * (ratio**2), MIN_GAMMA)
+
+    results = {}
+
+    for offset_h, offset_w in offsets:
+        key = f"offset_{offset_h}_{offset_w}"
+        print(f"\n  Testing {key}...", end=" ", flush=True)
+
+        # オフセット付きサブサンプリング演算子
+        def A(x, s=sub, oh=offset_h, ow=offset_w):
+            return x[..., oh::s, ow::s]
+
+        # 観測生成
+        y_star = torch.normal(A(x_star_flat), BASE_STD)
+
+        # GaussianScoreで再構成
+        sde = VPSDE(
+            GaussianScore(
+                y_star,
+                A=A,
+                std=std_scaled,
+                gamma=gamma_scaled,
+                sde=VPSDE(score.kernel, shape=(), eta=0.01),
+            ),
+            shape=x_star_flat.shape,
+            eta=0.01,
+        ).cuda()
+
+        x_recon_flat = sde.sample(
+            torch.Size([1]),
+            c=cond,
+            steps=256,
+            corrections=1,
+            tau=0.5,
+        ).cpu()[0]
+
+        x_recon_norm = x_recon_flat.unflatten(0, (T, C))
+
+        # 評価指標計算
+        metrics = compute_reconstruction_metrics(x_recon_norm, x_star_norm, normalizer)
+        results[key] = metrics
+
+        print(f"RMSE={metrics['rmse']:.4f}, Energy={metrics['energy_ratio']:.3f}")
+
+        # GT を保存
+        fig_gt = plot_velocity_and_vorticity(
+            x_star_raw,
+            title=f"Ground Truth",
+            figsize=(20, 9),
+            save_path=output_dir / f"grid_offset_{offset_h}_{offset_w}_gt.png",
+        )
+        plt.close(fig_gt)
+
+        # 再構成結果を保存
+        x_recon = normalizer.denormalize(x_recon_norm)
+        fig = plot_velocity_and_vorticity(
+            x_recon,
+            title=f"Grid Offset ({offset_h}, {offset_w}): RMSE={metrics['rmse']:.4f}",
+            figsize=(20, 9),
+            save_path=output_dir / f"grid_offset_{offset_h}_{offset_w}.png",
+        )
+        plt.close(fig)
+
+    return results
+
+
+def generalization_perturbation(
+    score: torch.nn.Module,
+    config: dict,
+    data_path: Path,
+    output_dir: Path,
+    noise_stds: list[float] = None,
+    subsample_rate: int = 4,
+) -> dict:
+    """微小擾乱による汎化テスト
+
+    テストデータに擾乱を加えて、モデルの頑健性を評価
+
+    Args:
+        score: 学習済みスコアモデル
+        config: モデル設定
+        data_path: データパス
+        output_dir: 出力ディレクトリ
+        noise_stds: テストするノイズ標準偏差のリスト
+        subsample_rate: サブサンプリングレート
+
+    Returns:
+        テスト結果の辞書
+    """
+    from sda.score import GaussianScore
+
+    print("\n" + "=" * 60)
+    print("GENERALIZATION TEST: PERTURBATION")
+    print("=" * 60)
+
+    if noise_stds is None:
+        noise_stds = [0.0, 0.01, 0.02, 0.05]
+
+    normalizer = IBPMNormalizer()
+    window = config.get("window", 16)
+
+    # テストデータをロード
+    test_data = load_ibpm_data(data_path, split="test")
+    n_timesteps = min(window, test_data.shape[1])
+    x_star_raw = test_data[0, :n_timesteps]
+    T, C, H, W = x_star_raw.shape
+
+    print(f"Test data shape: {x_star_raw.shape}")
+    print(f"Testing noise levels: {noise_stds}")
+
+    # 幾何条件
+    cylinder_mask = build_cylinder_mask(H, W, center=TRAIN_COND_CENTER, radius=TRAIN_COND_RADIUS)
+    inflow_profile = build_inflow_profile(H, W, U=1.0)
+    cond = torch.stack([cylinder_mask, inflow_profile], dim=0).unsqueeze(0).cuda()
+
+    # Clamped Linear Scalingパラメータ
+    BASE_STD = 0.2
+    BASE_GAMMA = 0.04
+    MIN_STD = 0.15
+    MIN_GAMMA = 0.02
+    n_obs_ref = (H // 4) * (W // 4) * T * C
+
+    sub = subsample_rate
+    n_obs = (H // sub) * (W // sub) * T * C
+    ratio = n_obs / n_obs_ref
+    std_scaled = max(BASE_STD * ratio, MIN_STD)
+    gamma_scaled = max(BASE_GAMMA * (ratio**2), MIN_GAMMA)
+
+    def A(x, s=sub):
+        return x[..., ::s, ::s]
+
+    results = {}
+
+    for noise_std in noise_stds:
+        key = f"noise_{noise_std:.3f}"
+        print(f"\n  Testing {key}...", end=" ", flush=True)
+
+        # 擾乱を加える（正規化前の物理空間で）
+        if noise_std > 0:
+            x_perturbed_raw = add_perturbation(x_star_raw, noise_std)
+        else:
+            x_perturbed_raw = x_star_raw
+
+        # 正規化してflatten
+        x_perturbed_norm = normalizer.normalize(x_perturbed_raw)
+        x_perturbed_flat = x_perturbed_norm.flatten(0, 1)
+
+        # 元のGT（擾乱なし）も正規化
+        x_star_norm = normalizer.normalize(x_star_raw)
+
+        # 観測生成（擾乱を加えたデータから）
+        y_star = torch.normal(A(x_perturbed_flat), BASE_STD)
+
+        # GaussianScoreで再構成
+        sde = VPSDE(
+            GaussianScore(
+                y_star,
+                A=A,
+                std=std_scaled,
+                gamma=gamma_scaled,
+                sde=VPSDE(score.kernel, shape=(), eta=0.01),
+            ),
+            shape=x_perturbed_flat.shape,
+            eta=0.01,
+        ).cuda()
+
+        x_recon_flat = sde.sample(
+            torch.Size([1]),
+            c=cond,
+            steps=256,
+            corrections=1,
+            tau=0.5,
+        ).cpu()[0]
+
+        x_recon_norm = x_recon_flat.unflatten(0, (T, C))
+
+        # 評価指標計算（元のGTと比較）
+        metrics = compute_reconstruction_metrics(x_recon_norm, x_star_norm, normalizer)
+        results[key] = metrics
+
+        print(f"RMSE={metrics['rmse']:.4f}, Energy={metrics['energy_ratio']:.3f}")
+
+        # GT を保存
+        fig_gt = plot_velocity_and_vorticity(
+            x_star_raw,
+            title=f"Ground Truth",
+            figsize=(20, 9),
+            save_path=output_dir / f"perturbation_noise_{noise_std:.3f}_gt.png",
+        )
+        plt.close(fig_gt)
+
+        # 再構成結果を保存
+        x_recon = normalizer.denormalize(x_recon_norm)
+        fig = plot_velocity_and_vorticity(
+            x_recon,
+            title=f"Perturbation (noise={noise_std:.3f}): RMSE={metrics['rmse']:.4f}",
+            figsize=(20, 9),
+            save_path=output_dir / f"perturbation_noise_{noise_std:.3f}.png",
+        )
+        plt.close(fig)
+
+    return results
+
+
+def generalization_geometry(
+    score: torch.nn.Module,
+    config: dict,
+    data_path: Path,
+    output_dir: Path,
+    subsample_rate: int = 4,
+) -> dict:
+    """幾何条件変更による汎化テスト
+
+    異なるジオメトリ（円柱位置・サイズ）でシミュレーションしたデータに対する
+    再構成性能を評価。GEOMETRY_DATA_PATHSに定義されたデータディレクトリから
+    実際のシミュレーションデータをロードする。
+
+    Args:
+        score: 学習済みスコアモデル
+        config: モデル設定
+        data_path: ベースラインデータのパス（親ディレクトリから汎化データを探索）
+        output_dir: 出力ディレクトリ
+        subsample_rate: サブサンプリングレート
+
+    Returns:
+        テスト結果の辞書
+    """
+    from sda.score import GaussianScore
+
+    print("\n" + "=" * 60)
+    print("GENERALIZATION TEST: GEOMETRY")
+    print("=" * 60)
+
+    # データディレクトリのルートを取得
+    # data_path = .../ibpm_h5_wide_centered -> data_root = .../
+    data_root = data_path.parent
+
+    normalizer = IBPMNormalizer()
+    window = config.get("window", 16)
+
+    # Clamped Linear Scalingパラメータ
+    BASE_STD = 0.2
+    BASE_GAMMA = 0.04
+    MIN_STD = 0.15
+    MIN_GAMMA = 0.02
+
+    sub = subsample_rate
+
+    def A(x, s=sub):
+        return x[..., ::s, ::s]
+
+    results = {}
+
+    print(f"Testing geometry configs: {list(GEOMETRY_PARAMS.keys())}")
+
+    for name, params in GEOMETRY_PARAMS.items():
+        # 1. 対応するデータをロード
+        gen_data_dir = GEOMETRY_DATA_PATHS[name]
+        gen_data_path = data_root / gen_data_dir
+
+        if not gen_data_path.exists():
+            print(f"\n  Skipping {name}: data directory not found ({gen_data_path})")
+            continue
+
+        try:
+            test_data = load_ibpm_data(gen_data_path, split="test")
+        except Exception as e:
+            print(f"\n  Skipping {name}: failed to load data ({e})")
+            continue
+
+        n_timesteps = min(window, test_data.shape[1])
+        x_star_raw = test_data[0, :n_timesteps]
+        T, C, H, W = x_star_raw.shape
+
+        x_star_norm = normalizer.normalize(x_star_raw)
+        x_star_flat = x_star_norm.flatten(0, 1)
+
+        # 2. 物理座標からピクセル座標へ変換
+        y_physical = params["y"]
+        r_physical = params["radius"]
+        data_y_pixel = physical_to_pixel_y(y_physical, H)
+        cond_radius = physical_to_pixel_radius(r_physical, H)
+
+        # 条件テンソルの中心を計算（学習時のオフセットを維持）
+        cond_center = get_condition_center_for_data(data_y_pixel)
+
+        print(f"\n  Testing {name}:")
+        print(f"    Data: {gen_data_dir}, shape={x_star_raw.shape}")
+        print(f"    Physical: y={y_physical}, r={r_physical}")
+        print(f"    Pixel: data_y={data_y_pixel:.1f}, cond_y={cond_center[1]:.1f}, r={cond_radius:.1f}")
+
+        # 3. スケーリングパラメータ計算
+        n_obs_ref = (H // 4) * (W // 4) * T * C
+        n_obs = (H // sub) * (W // sub) * T * C
+        ratio = n_obs / n_obs_ref
+        std_scaled = max(BASE_STD * ratio, MIN_STD)
+        gamma_scaled = max(BASE_GAMMA * (ratio**2), MIN_GAMMA)
+
+        # 4. 観測生成（このジオメトリのデータから）
+        y_star = torch.normal(A(x_star_flat), BASE_STD)
+
+        # 5. 条件テンソルを生成（実際のジオメトリパラメータを使用）
+        cylinder_mask = build_cylinder_mask(H, W, center=cond_center, radius=cond_radius)
+        inflow_profile = build_inflow_profile(H, W, U=1.0)
+        cond = torch.stack([cylinder_mask, inflow_profile], dim=0).unsqueeze(0).cuda()
+
+        # 6. GaussianScoreで再構成
+        sde = VPSDE(
+            GaussianScore(
+                y_star,
+                A=A,
+                std=std_scaled,
+                gamma=gamma_scaled,
+                sde=VPSDE(score.kernel, shape=(), eta=0.01),
+            ),
+            shape=x_star_flat.shape,
+            eta=0.01,
+        ).cuda()
+
+        x_recon_flat = sde.sample(
+            torch.Size([1]),
+            c=cond,
+            steps=256,
+            corrections=1,
+            tau=0.5,
+        ).cpu()[0]
+
+        x_recon_norm = x_recon_flat.unflatten(0, (T, C))
+
+        # 7. 評価指標計算
+        metrics = compute_reconstruction_metrics(x_recon_norm, x_star_norm, normalizer)
+        metrics["data_dir"] = gen_data_dir
+        metrics["y_physical"] = y_physical
+        metrics["r_physical"] = r_physical
+        metrics["data_y_pixel"] = data_y_pixel
+        metrics["cond_center"] = cond_center
+        metrics["cond_radius"] = cond_radius
+        results[name] = metrics
+
+        print(f"    RMSE={metrics['rmse']:.4f}, Energy={metrics['energy_ratio']:.3f}")
+
+        # 8. GT を保存
+        fig_gt = plot_velocity_and_vorticity(
+            x_star_raw,
+            title=f"Ground Truth ({name}: y={y_physical}, r={r_physical})",
+            figsize=(20, 9),
+            save_path=output_dir / f"geometry_{name}_gt.png",
+        )
+        plt.close(fig_gt)
+
+        # 9. 再構成結果を保存
+        x_recon = normalizer.denormalize(x_recon_norm)
+        fig = plot_velocity_and_vorticity(
+            x_recon,
+            title=f"Geometry {name}: RMSE={metrics['rmse']:.4f}",
+            figsize=(20, 9),
+            save_path=output_dir / f"geometry_{name}.png",
+        )
+        plt.close(fig)
+
+    return results
+
+
+def generalization_reynolds(
+    score: torch.nn.Module,
+    config: dict,
+    data_path: Path,
+    output_dir: Path,
+    subsample_rate: int = 4,
+) -> dict:
+    """レイノルズ数変更による汎化テスト
+
+    異なるReynolds数でシミュレーションしたデータに対する再構成性能を評価。
+
+    注意: 条件テンソルにReynolds数情報は含まれていないため、
+    モデルはRe=100で学習したデータの分布を持つ。異なるReのデータに対する
+    再構成は、データ分布のずれに対するロバスト性をテストする。
+
+    Args:
+        score: 学習済みスコアモデル
+        config: モデル設定
+        data_path: データパス
+        output_dir: 出力ディレクトリ
+        subsample_rate: サブサンプリングレート
+
+    Returns:
+        テスト結果の辞書
+    """
+    from sda.score import GaussianScore
+
+    print("\n" + "=" * 60)
+    print("GENERALIZATION TEST: REYNOLDS NUMBER")
+    print("=" * 60)
+
+    # データディレクトリのルートを取得
+    data_root = data_path.parent
+
+    normalizer = IBPMNormalizer()
+    window = config.get("window", 16)
+
+    # Clamped Linear Scalingパラメータ
+    BASE_STD = 0.2
+    BASE_GAMMA = 0.04
+    MIN_STD = 0.15
+    MIN_GAMMA = 0.02
+
+    sub = subsample_rate
+
+    def A(x, s=sub):
+        return x[..., ::s, ::s]
+
+    results = {}
+
+    print(f"Testing Reynolds numbers: {list(REYNOLDS_DATA_PATHS.keys())}")
+    print("  Note: Model trained on Re=100. Testing distribution shift robustness.")
+
+    for name, data_dir in REYNOLDS_DATA_PATHS.items():
+        # 1. 対応するデータをロード
+        re_data_path = data_root / data_dir
+
+        if not re_data_path.exists():
+            print(f"\n  Skipping {name}: data directory not found ({re_data_path})")
+            continue
+
+        try:
+            test_data = load_ibpm_data(re_data_path, split="test")
+        except Exception as e:
+            print(f"\n  Skipping {name}: failed to load data ({e})")
+            continue
+
+        n_timesteps = min(window, test_data.shape[1])
+        x_star_raw = test_data[0, :n_timesteps]
+        T, C, H, W = x_star_raw.shape
+
+        x_star_norm = normalizer.normalize(x_star_raw)
+        x_star_flat = x_star_norm.flatten(0, 1)
+
+        # Re値を名前から抽出
+        re_value = int(name.split("_")[1])
+
+        print(f"\n  Testing {name}:")
+        print(f"    Data: {data_dir}, shape={x_star_raw.shape}")
+        print(f"    Reynolds number: {re_value}")
+
+        # 2. スケーリングパラメータ計算
+        n_obs_ref = (H // 4) * (W // 4) * T * C
+        n_obs = (H // sub) * (W // sub) * T * C
+        ratio = n_obs / n_obs_ref
+        std_scaled = max(BASE_STD * ratio, MIN_STD)
+        gamma_scaled = max(BASE_GAMMA * (ratio**2), MIN_GAMMA)
+
+        # 3. 観測生成（このRe設定のデータから）
+        y_star = torch.normal(A(x_star_flat), BASE_STD)
+
+        # 4. 条件テンソルを生成（学習時のデフォルトを使用）
+        cylinder_mask = build_cylinder_mask(H, W, center=TRAIN_COND_CENTER, radius=TRAIN_COND_RADIUS)
+        inflow_profile = build_inflow_profile(H, W, U=1.0)
+        cond = torch.stack([cylinder_mask, inflow_profile], dim=0).unsqueeze(0).cuda()
+
+        # 5. GaussianScoreで再構成
+        sde = VPSDE(
+            GaussianScore(
+                y_star,
+                A=A,
+                std=std_scaled,
+                gamma=gamma_scaled,
+                sde=VPSDE(score.kernel, shape=(), eta=0.01),
+            ),
+            shape=x_star_flat.shape,
+            eta=0.01,
+        ).cuda()
+
+        x_recon_flat = sde.sample(
+            torch.Size([1]),
+            c=cond,
+            steps=256,
+            corrections=1,
+            tau=0.5,
+        ).cpu()[0]
+
+        x_recon_norm = x_recon_flat.unflatten(0, (T, C))
+
+        # 6. 評価指標計算
+        metrics = compute_reconstruction_metrics(x_recon_norm, x_star_norm, normalizer)
+        metrics["data_dir"] = data_dir
+        metrics["Re"] = re_value
+        results[name] = metrics
+
+        print(f"    RMSE={metrics['rmse']:.4f}, Energy={metrics['energy_ratio']:.3f}")
+
+        # 7. GT を保存
+        fig_gt = plot_velocity_and_vorticity(
+            x_star_raw,
+            title=f"Ground Truth (Re={re_value})",
+            figsize=(20, 9),
+            save_path=output_dir / f"reynolds_{name}_gt.png",
+        )
+        plt.close(fig_gt)
+
+        # 8. 再構成結果を保存
+        x_recon = normalizer.denormalize(x_recon_norm)
+        fig = plot_velocity_and_vorticity(
+            x_recon,
+            title=f"Reynolds {name}: RMSE={metrics['rmse']:.4f}",
+            figsize=(20, 9),
+            save_path=output_dir / f"reynolds_{name}.png",
+        )
+        plt.close(fig)
+
+    return results
+
+
+def generalization_test(
+    score: torch.nn.Module,
+    config: dict,
+    data_path: Path,
+    output_dir: Path,
+    run_dir: Path,
+) -> None:
+    """汎化性能テストのメインエントリポイント
+
+    グリッドオフセット、擾乱、幾何条件、流入速度テストを実行し、結果をJSON出力
+    """
+    print("\n" + "=" * 60)
+    print("GENERALIZATION PERFORMANCE TESTS")
+    print("=" * 60)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    gen_output_dir = output_dir / f"generalization_{timestamp}"
+    gen_output_dir.mkdir(parents=True, exist_ok=True)
+
+    # サブディレクトリ作成
+    grid_offset_dir = gen_output_dir / "grid_offset"
+    perturbation_dir = gen_output_dir / "perturbation"
+    geometry_dir = gen_output_dir / "geometry"
+    grid_offset_dir.mkdir(exist_ok=True)
+    perturbation_dir.mkdir(exist_ok=True)
+    geometry_dir.mkdir(exist_ok=True)
+
+    all_results = {
+        "model": str(run_dir.name),
+        "timestamp": timestamp,
+        "tests": {},
+    }
+
+    # グリッドオフセットテスト
+    print("\n--- Grid Offset Tests ---")
+    grid_results = generalization_grid_offset(
+        score,
+        config,
+        data_path,
+        grid_offset_dir,
+        subsample_rate=4,
+        offsets=[(0, 0), (1, 1), (2, 0), (0, 2), (2, 2)],
+    )
+    all_results["tests"]["grid_offset"] = grid_results
+
+    # 擾乱テスト
+    print("\n--- Perturbation Tests ---")
+    perturb_results = generalization_perturbation(
+        score,
+        config,
+        data_path,
+        perturbation_dir,
+        noise_stds=[0.0, 0.01, 0.02, 0.05],
+        subsample_rate=4,
+    )
+    all_results["tests"]["perturbation"] = perturb_results
+
+    # 幾何条件テスト（異なるジオメトリのシミュレーションデータを使用）
+    print("\n--- Geometry Tests (Real Generalization) ---")
+    geometry_results = generalization_geometry(
+        score,
+        config,
+        data_path,
+        geometry_dir,
+        subsample_rate=4,
+    )
+    all_results["tests"]["geometry"] = geometry_results
+
+    # レイノルズ数テスト（異なるReのシミュレーションデータを使用）
+    print("\n--- Reynolds Number Tests ---")
+    reynolds_dir = gen_output_dir / "reynolds"
+    reynolds_dir.mkdir(exist_ok=True)
+    reynolds_results = generalization_reynolds(
+        score,
+        config,
+        data_path,
+        reynolds_dir,
+        subsample_rate=4,
+    )
+    all_results["tests"]["reynolds"] = reynolds_results
+
+    # 結果をJSON出力
+    report_path = gen_output_dir / "report.json"
+    with open(report_path, "w") as f:
+        json.dump(all_results, f, indent=2)
+    print(f"\n  Results saved to: {report_path}")
+
+    # サマリー表示
+    print("\n" + "=" * 60)
+    print("GENERALIZATION TEST SUMMARY")
+    print("=" * 60)
+
+    print("\nGrid Offset Results:")
+    for key, metrics in grid_results.items():
+        print(f"  {key}: RMSE={metrics['rmse']:.4f}, Energy={metrics['energy_ratio']:.3f}")
+
+    print("\nPerturbation Results:")
+    for key, metrics in perturb_results.items():
+        print(f"  {key}: RMSE={metrics['rmse']:.4f}, Energy={metrics['energy_ratio']:.3f}")
+
+    print("\nGeometry Results:")
+    for key, metrics in geometry_results.items():
+        print(f"  {key}: RMSE={metrics['rmse']:.4f}, Energy={metrics['energy_ratio']:.3f}")
+
+    print("\nReynolds Number Results:")
+    for key, metrics in reynolds_results.items():
+        print(f"  {key}: RMSE={metrics['rmse']:.4f}, Energy={metrics['energy_ratio']:.3f}")
+
+    print(f"\nOutput directory: {gen_output_dir}")
+
+
+def main():
     parser = argparse.ArgumentParser(description="IBPM Flow 実験の評価")
     parser.add_argument("--run-dir", type=Path, required=True, help="学習済みモデルのディレクトリ")
     parser.add_argument(
         "--data-path", type=Path, default=Path("/home/devuser/fluid-sbi/data/ibpm_h5_400x200"), help="IBPMデータのパス"
     )
-    parser.add_argument("--output-dir", type=Path, default=default_output, help="出力ディレクトリ")
+    parser.add_argument("--output-dir", type=Path, default=None, help="出力ディレクトリ（未指定時はrun-idから自動生成）")
     parser.add_argument(
         "--mode",
         type=str,
         default="all",
-        choices=["all", "data", "sample", "sparse", "debug", "trajectory", "compare", "kolmogorov"],
+        choices=["all", "data", "sample", "sparse", "debug", "trajectory", "compare", "kolmogorov", "generalization"],
         help="実行モード",
     )
     parser.add_argument(
@@ -702,8 +1565,18 @@ def main():
     )
     args = parser.parse_args()
 
-    # モード別出力ディレクトリを設定
-    base_dir = args.output_dir
+    # run_idを抽出（run-dirの名前がrun_id）
+    run_id = args.run_dir.name
+
+    # 出力ディレクトリを決定
+    # 指定されていない場合はrun_idに紐付いたディレクトリを使用
+    if args.output_dir:
+        base_dir = args.output_dir
+    else:
+        # run_id based output: results/ibpm/{run_id}/evaluate_{timestamp}/
+        base_dir = get_run_results_dir("ibpm", run_id, "evaluate")
+        print(f"Using run-linked output directory: {base_dir}")
+
     output_dirs = {
         "data": base_dir / "data",
         "sample": base_dir / "sample",
@@ -717,6 +1590,7 @@ def main():
     for mode_dir in output_dirs.values():
         mode_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {base_dir}")
+    print(f"Run ID: {run_id}")
 
     # モデルロード（data/compare/kolmogorovモード以外で必要）
     score, config = None, None
@@ -755,6 +1629,10 @@ def main():
             print("[ERROR] --kolmo-run-dir is required for kolmogorov mode")
         else:
             kolmogorov_comparison(args.data_path, output_dirs["kolmogorov"], args.kolmo_run_dir)
+
+    if args.mode == "generalization":
+        if score is not None and config is not None:
+            generalization_test(score, config, args.data_path, base_dir, args.run_dir)
 
     print("\n" + "=" * 60)
     print("DONE")

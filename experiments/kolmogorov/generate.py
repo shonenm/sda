@@ -5,6 +5,7 @@ Kolmogorov流の訓練データ生成スクリプト
 
 SLURMジョブ配列を使って1024個の独立したシミュレーションを並列実行し、
 その後HDF5形式で訓練/検証/テストデータセットに集約
+データセット生成後、DataRegistryに登録
 """
 
 import random
@@ -14,13 +15,14 @@ import h5py
 import numpy as np
 from dawgz import after, ensure, job, schedule
 
+from sda.data import DataRegistry
 from sda.mcs import KolmogorovFlow
-from sda.paths import get_data_dir
+from sda.paths import get_processed_data_dir
 
 from .utils import *
 
-# データディレクトリ（kolmogorov実験用）
-DATA_DIR = get_data_dir("kolmogorov")
+# データディレクトリ（kolmogorov実験用、バージョン付き）
+DATA_DIR = get_processed_data_dir("kolmogorov")
 
 
 @ensure(lambda i: (DATA_DIR / f"x_{i:06d}.npy").exists())
@@ -83,6 +85,29 @@ def aggregate():
                 # 空間解像度を256×256から64×64に縮小（4×4平均プーリング）
                 arr = KolmogorovFlow.coarsen(torch.from_numpy(x), 4).detach().cpu().numpy().astype(np.float32)
                 dset[i, ...] = arr
+
+    # データセットをレジストリに登録
+    registry = DataRegistry()
+    dataset = registry.register_dataset(
+        name="kolmogorov",
+        path=DATA_DIR,
+        metadata={
+            "source": "Kolmogorov flow simulation",
+            "n_trajectories": length,
+            "n_timesteps": 64,
+            "spatial_resolution": 64,
+            "original_resolution": 256,
+            "coarsening_factor": 4,
+            "burnin_steps": 64,
+            "splits": {
+                "train": i,
+                "valid": j - i,
+                "test": length - j,
+            },
+        },
+    )
+    print(f"Registered dataset: {dataset.full_name}")
+    print(f"Path: {dataset.path}")
 
 
 if __name__ == "__main__":

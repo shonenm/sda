@@ -5,6 +5,7 @@ Lorenz 63システムの訓練データ生成スクリプト
 
 1024個の独立した軌道をシミュレートし、バーンイン後の長時系列を生成
 訓練/検証/テストデータに分割してHDF5形式で保存
+データセット生成後、DataRegistryに登録
 """
 
 from typing import *
@@ -13,10 +14,11 @@ import h5py
 from dawgz import job, schedule
 from utils import *
 
-from sda.paths import get_data_dir
+from sda.data import DataRegistry
+from sda.paths import get_processed_data_dir
 
-# データディレクトリ（lorenz実験用）
-DATA_DIR = get_data_dir("lorenz")
+# データディレクトリ（lorenz実験用、バージョン付き）
+DATA_DIR = get_processed_data_dir("lorenz")
 
 
 @job(cpus=1, ram="1GB", time="00:05:00")
@@ -53,6 +55,27 @@ def simulate():
     for name, x in splits.items():
         with h5py.File(DATA_DIR / f"{name}.h5", mode="w") as f:
             f.create_dataset("x", data=x, dtype=np.float32)
+
+    # データセットをレジストリに登録
+    registry = DataRegistry()
+    dataset = registry.register_dataset(
+        name="lorenz",
+        path=DATA_DIR,
+        metadata={
+            "source": "Lorenz 63 system simulation",
+            "n_trajectories": 1024,
+            "n_timesteps": 1024,
+            "dimensions": 3,
+            "burnin_steps": 1024,
+            "splits": {
+                "train": int(0.8 * 1024),
+                "valid": int(0.1 * 1024),
+                "test": int(0.1 * 1024),
+            },
+        },
+    )
+    print(f"Registered dataset: {dataset.full_name}")
+    print(f"Path: {dataset.path}")
 
 
 if __name__ == "__main__":
