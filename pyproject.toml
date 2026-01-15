@@ -8,22 +8,8 @@ version = "0.0.1"
 description = "Submodule package for SDA experiments"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-  "numpy",
-  "torch",
-  "h5py",
-  "dawgz",
-  "matplotlib",
-  "tqdm",
-  "zuko",
-  "wandb",
-  "seaborn",
-  "pillow",
-  "rich>=14.2.0",
-  "structlog>=25.5.0",
-  "pydantic>=2.12.5",
-  "pydantic-settings>=2.12.0",
-]
+# Dependencies are managed in the root pyproject.toml
+dependencies = []
 
 [tool.setuptools]
-packages = ["sda"]  # sda/ 配下に __init__.py がある前提
+packages = ["sda"]
