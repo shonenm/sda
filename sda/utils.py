@@ -265,6 +265,43 @@ def load_config(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
+def save_eval_config(
+    config: dict[str, Any],
+    output_dir: Path,
+    filename: str = "eval_config.yaml",
+) -> Path:
+    """評価パラメータをYAMLファイルとして保存
+
+    評価スクリプトで使用したパラメータを結果ディレクトリに保存する。
+    再現性の確保と結果の追跡に使用。
+
+    Args:
+        config: 保存するパラメータ辞書
+        output_dir: 結果ディレクトリ
+        filename: ファイル名（デフォルト: eval_config.yaml）
+
+    Returns:
+        保存したファイルのパス
+    """
+    import yaml
+    from datetime import datetime
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # タイムスタンプを追加
+    config_with_meta = {
+        "timestamp": datetime.now().isoformat(),
+        **config,
+    }
+
+    filepath = output_dir / filename
+    with open(filepath, "w") as f:
+        yaml.dump(config_with_meta, f, default_flow_style=False, allow_unicode=True)
+
+    return filepath
+
+
 def to(x: Any, **kwargs) -> Any:
     """データを指定されたデバイス・型に再帰的に転送
 
