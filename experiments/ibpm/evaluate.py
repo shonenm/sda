@@ -2,12 +2,14 @@
 """IBPM Flow 実験の評価スクリプト
 
 Usage:
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode all
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode data
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode sample
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode sparse
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode debug
-    python experiments/ibpm/evaluate.py --run-dir runs/ibpm/ibpm_vpsde_xxx --mode generalization
+    # Auto-detect latest run:
+    python experiments/ibpm/evaluate.py --mode sample
+
+    # Specify run ID:
+    python experiments/ibpm/evaluate.py --run-id ibpm_vpsde_xxx --mode all
+
+    # Specify full path (legacy):
+    python experiments/ibpm/evaluate.py --run-dir /path/to/run --mode all
 """
 
 import argparse
@@ -30,8 +32,27 @@ from experiments.ibpm.utils import (
     plot_velocity_and_vorticity,
 )
 from sda.data.ibpm_dataset import IBPMDataset, IBPMNormalizer, build_cylinder_mask, build_inflow_profile
-from sda.paths import get_results_dir, get_run_results_dir
+from sda.paths import get_results_dir, get_run_results_dir, get_runs_dir, get_data_dir
 from sda.score import VPSDE
+
+
+def find_latest_ibpm_run() -> Path:
+    """Find the latest IBPM run.
+
+    Returns:
+        Path to the latest run directory
+    """
+    runs_dir = get_runs_dir() / "ibpm"
+    if not runs_dir.exists():
+        raise ValueError(f"No IBPM runs found: {runs_dir}")
+
+    runs = [d for d in runs_dir.iterdir() if d.is_dir()]
+    if not runs:
+        raise ValueError(f"No runs found in {runs_dir}")
+
+    # Sort by modification time (newest first)
+    runs = sorted(runs, key=lambda p: p.stat().st_mtime, reverse=True)
+    return runs[0]
 
 # ============================================================================
 # 条件テンソルの円柱位置設定
@@ -119,22 +140,32 @@ def physical_to_pixel_radius(
 # ============================================================================
 # 各ジオメトリ設定に対応するシミュレーションデータディレクトリ
 GEOMETRY_DATA_PATHS = {
-    "baseline": "ibpm_h5_wide_centered",
-    "y_m01": "ibpm_h5_gen_cylinder_y_m01",
-    "y_m02": "ibpm_h5_gen_cylinder_y_m02",
-    "y_p02": "ibpm_h5_gen_cylinder_y_p02",
-    "r_04": "ibpm_h5_gen_cylinder_r04",
-    "r_06": "ibpm_h5_gen_cylinder_r06",
+    "baseline": "ibpm_h5_400x200",  # 学習データ（perturbed）
+    "y_m01": "ibpm_h5_gen_v2_y_m01",
+    "y_m02": "ibpm_h5_gen_v2_y_m02",
+    "y_p02": "ibpm_h5_gen_v2_y_p02",
+    "r_04": "ibpm_h5_gen_v2_r04",
+    "r_06": "ibpm_h5_gen_v2_r06",
+    # 大変動ジオメトリ（派手な変化テスト）
+    "r_025": "ibpm_h5_gen_r025",  # 半径 50%
+    "r_075": "ibpm_h5_gen_r075",  # 半径 150%
+    "y_p10": "ibpm_h5_gen_y_p10",  # y=+1.0
+    "y_m10": "ibpm_h5_gen_y_m10",  # y=-1.0
 }
 
-# 各ジオメトリ設定の物理パラメータ
+# 各ジオメトリ設定の物理パラメータ（y=0ベース）
 GEOMETRY_PARAMS = {
-    "baseline": {"y": -2.0, "radius": 0.5},
-    "y_m01": {"y": -2.1, "radius": 0.5},
-    "y_m02": {"y": -2.2, "radius": 0.5},
-    "y_p02": {"y": -1.8, "radius": 0.5},
-    "r_04": {"y": -2.0, "radius": 0.4},
-    "r_06": {"y": -2.0, "radius": 0.6},
+    "baseline": {"y": 0.0, "radius": 0.5},
+    "y_m01": {"y": -0.1, "radius": 0.5},
+    "y_m02": {"y": -0.2, "radius": 0.5},
+    "y_p02": {"y": 0.2, "radius": 0.5},
+    "r_04": {"y": 0.05, "radius": 0.4},  # y=0.05 for vortex shedding
+    "r_06": {"y": 0.05, "radius": 0.6},  # y=0.05 for vortex shedding
+    # 大変動ジオメトリ（派手な変化テスト）
+    "r_025": {"y": 0.05, "radius": 0.25},  # 半径 50%
+    "r_075": {"y": 0.05, "radius": 0.75},  # 半径 150%
+    "y_p10": {"y": 1.0, "radius": 0.5},   # y=+1.0
+    "y_m10": {"y": -1.0, "radius": 0.5},  # y=-1.0
 }
 
 # Reynolds数テスト用データパス（Phase 2で生成予定）
@@ -435,6 +466,369 @@ def sparse_reconstruction(
         )
         plt.close(fig)
         print("Saved")
+
+
+def sparse_generalization_test(
+    score: torch.nn.Module,
+    config: dict,
+    data_path: Path,
+    output_dir: Path,
+    subsample_rates: list = [2, 4, 8, 16],
+) -> dict:
+    """全ジオメトリ × 全サブサンプル率のスパース復元テスト
+
+    Args:
+        score: 学習済みスコアモデル
+        config: モデル設定
+        data_path: ベースラインデータのパス
+        output_dir: 出力ディレクトリ
+        subsample_rates: テストするサブサンプリングレート
+
+    Returns:
+        {
+            "baseline": {"sub2": metrics, "sub4": metrics, ...},
+            "y_m01": {"sub2": metrics, "sub4": metrics, ...},
+            ...
+        }
+    """
+    from sda.score import GaussianScore
+    import numpy as np
+
+    print("\n" + "=" * 60)
+    print("SPARSE GENERALIZATION TEST")
+    print(f"Geometries: {list(GEOMETRY_PARAMS.keys())}")
+    print(f"Subsample rates: {subsample_rates}")
+    print("=" * 60)
+
+    data_root = data_path.parent
+    normalizer = IBPMNormalizer()
+    window = config.get("window", 16)
+
+    # Clamped Linear Scaling パラメータ
+    BASE_STD = 0.2
+    BASE_GAMMA = 0.04
+    MIN_STD = 0.15
+    MIN_GAMMA = 0.02
+
+    results = {}
+
+    for geom_name, geom_params in GEOMETRY_PARAMS.items():
+        # 1. データロード
+        gen_data_dir = GEOMETRY_DATA_PATHS[geom_name]
+        gen_data_path = data_root / gen_data_dir
+
+        if not gen_data_path.exists():
+            print(f"\n  Skipping {geom_name}: data not found ({gen_data_path})")
+            continue
+
+        try:
+            test_data = load_ibpm_data(gen_data_path, split="test")
+        except Exception as e:
+            print(f"\n  Skipping {geom_name}: load failed ({e})")
+            continue
+
+        n_timesteps = min(window, test_data.shape[1])
+        x_star_raw = test_data[0, :n_timesteps]
+        T, C, H, W = x_star_raw.shape
+
+        x_star_norm = normalizer.normalize(x_star_raw)
+        x_star_flat = x_star_norm.flatten(0, 1)
+
+        # 2. 物理座標 → ピクセル座標
+        y_physical = geom_params["y"]
+        r_physical = geom_params["radius"]
+        data_y_pixel = physical_to_pixel_y(y_physical, H)
+        cond_radius = physical_to_pixel_radius(r_physical, H)
+        cond_center = get_condition_center_for_data(data_y_pixel)
+
+        # 3. 条件テンソル生成
+        cylinder_mask = build_cylinder_mask(H, W, center=cond_center, radius=cond_radius)
+        inflow_profile = build_inflow_profile(H, W, U=1.0)
+        cond = torch.stack([cylinder_mask, inflow_profile], dim=0).unsqueeze(0).cuda()
+
+        print(f"\n  {geom_name} (y={y_physical}, r={r_physical}):")
+
+        geom_results = {}
+        reconstructions = {}  # 比較プロット用に復元結果を保存
+        n_obs_ref = (H // 4) * (W // 4) * T * C
+
+        for sub in subsample_rates:
+            # 4. スケーリングパラメータ
+            n_obs = (H // sub) * (W // sub) * T * C
+            ratio = n_obs / n_obs_ref
+            std_scaled = max(BASE_STD * ratio, MIN_STD)
+            gamma_scaled = max(BASE_GAMMA * (ratio**2), MIN_GAMMA)
+
+            print(f"    sub={sub:2d}...", end=" ", flush=True)
+
+            # 5. サブサンプリング演算子
+            def A(x, s=sub):
+                return x[..., ::s, ::s]
+
+            # 6. 観測生成
+            y_star = torch.normal(A(x_star_flat), BASE_STD)
+
+            # 7. GaussianScore で復元
+            sde = VPSDE(
+                GaussianScore(
+                    y_star,
+                    A=A,
+                    std=std_scaled,
+                    gamma=gamma_scaled,
+                    sde=VPSDE(score.kernel, shape=(), eta=0.01),
+                ),
+                shape=x_star_flat.shape,
+                eta=0.01,
+            ).cuda()
+
+            x_recon_flat = sde.sample(
+                torch.Size([1]),
+                c=cond,
+                steps=256,
+                corrections=1,
+                tau=0.5,
+            ).cpu()[0]
+
+            x_recon_norm = x_recon_flat.unflatten(0, (T, C))
+
+            # 8. メトリクス計算
+            metrics = compute_reconstruction_metrics(x_recon_norm, x_star_norm, normalizer)
+            geom_results[f"sub{sub}"] = metrics
+
+            print(f"RMSE={metrics['rmse']:.4f}, Energy={metrics['energy_ratio']:.3f}")
+
+            # 9. 可視化
+            x_recon = normalizer.denormalize(x_recon_norm)
+            reconstructions[sub] = x_recon  # 比較プロット用に保存
+
+            fig = plot_velocity_and_vorticity(
+                x_recon,
+                title=f"{geom_name} sub={sub}: RMSE={metrics['rmse']:.4f}",
+                figsize=(20, 9),
+                save_path=output_dir / f"sparse_gen_{geom_name}_sub{sub}.png",
+            )
+            plt.close(fig)
+
+        # 10. GT比較プロットを生成
+        x_gt = normalizer.denormalize(x_star_norm)
+        _plot_sparse_gen_comparison(
+            x_gt, reconstructions, subsample_rates, geom_name, output_dir,
+            y_physical=y_physical, r_physical=r_physical
+        )
+
+        # ジオメトリのメタ情報を追加
+        geom_results["y_physical"] = y_physical
+        geom_results["r_physical"] = r_physical
+        results[geom_name] = geom_results
+
+    # サマリーヒートマップの生成
+    _plot_sparse_gen_summary(results, subsample_rates, output_dir)
+
+    return results
+
+
+def _plot_sparse_gen_summary(results: dict, subsample_rates: list, output_dir: Path) -> None:
+    """Generate summary heatmap for sparse generalization test"""
+    import numpy as np
+    import matplotlib.gridspec as gridspec
+
+    geom_names = [name for name in GEOMETRY_PARAMS.keys() if name in results]
+    if not geom_names:
+        return
+
+    # Human-readable geometry labels
+    geom_labels = {
+        "baseline": "Baseline (y=0, r=0.5)",
+        "y_m01": "Y-shift -0.1",
+        "y_m02": "Y-shift -0.2",
+        "y_p02": "Y-shift +0.2",
+        "r_04": "Small (r=0.4)",
+        "r_06": "Large (r=0.6)",
+        # 大変動ジオメトリ
+        "r_025": "Tiny (r=0.25)",
+        "r_075": "Huge (r=0.75)",
+        "y_p10": "Y-shift +1.0",
+        "y_m10": "Y-shift -1.0",
+    }
+
+    # Build RMSE matrix
+    rmse_matrix = []
+    for geom in geom_names:
+        row = []
+        for sub in subsample_rates:
+            key = f"sub{sub}"
+            if key in results[geom]:
+                row.append(results[geom][key]["rmse"])
+            else:
+                row.append(np.nan)
+        rmse_matrix.append(row)
+
+    rmse_matrix = np.array(rmse_matrix)
+
+    # Create figure with GridSpec for separate colorbar space
+    fig = plt.figure(figsize=(12, 6))
+    gs = gridspec.GridSpec(1, 2, width_ratios=[15, 1], wspace=0.3)
+
+    ax = fig.add_subplot(gs[0])
+    cax = fig.add_subplot(gs[1])
+
+    im = ax.imshow(rmse_matrix, cmap="YlOrRd", aspect="auto")
+
+    # Axis labels
+    ax.set_xticks(range(len(subsample_rates)))
+    ax.set_xticklabels([f"1/{s}\n({100.0/(s**2):.1f}%)" for s in subsample_rates], fontsize=11)
+    ax.set_yticks(range(len(geom_names)))
+    ax.set_yticklabels([geom_labels.get(g, g) for g in geom_names], fontsize=11)
+    ax.set_xlabel("Subsample Rate (Observation %)", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Geometry Configuration", fontsize=12, fontweight="bold")
+    ax.set_title("Sparse Observation Reconstruction: RMSE by Geometry and Subsample Rate",
+                 fontsize=14, fontweight="bold", pad=15)
+
+    # Display values in cells
+    for i in range(len(geom_names)):
+        for j in range(len(subsample_rates)):
+            val = rmse_matrix[i, j]
+            if not np.isnan(val):
+                text_color = "white" if val > 0.5 else "black"
+                ax.text(j, i, f"{val:.3f}", ha="center", va="center",
+                        color=text_color, fontsize=11, fontweight="bold")
+
+    # Colorbar in dedicated axis
+    cbar = fig.colorbar(im, cax=cax)
+    cbar.set_label("RMSE", fontsize=12, fontweight="bold")
+    cbar.ax.tick_params(labelsize=10)
+
+    plt.savefig(output_dir / "sparse_gen_summary.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"\n  Summary heatmap saved: {output_dir / 'sparse_gen_summary.png'}")
+
+
+def _plot_sparse_gen_comparison(
+    x_gt: torch.Tensor,
+    reconstructions: dict,
+    subsample_rates: list,
+    geom_name: str,
+    output_dir: Path,
+    y_physical: float = 0.0,
+    r_physical: float = 0.5,
+    timestep: int = 8,
+) -> None:
+    """Generate comparison plot of GT vs reconstructions at different subsample rates
+
+    Args:
+        x_gt: Ground truth data (T, C, H, W)
+        reconstructions: {sub_rate: x_recon} dict (each x_recon is (T, C, H, W))
+        subsample_rates: List of subsample rates
+        geom_name: Geometry name
+        output_dir: Output directory
+        y_physical: Cylinder y-position in physical coordinates
+        r_physical: Cylinder radius in physical coordinates
+        timestep: Timestep to visualize
+    """
+    import numpy as np
+    from matplotlib.patches import Circle
+
+    T, C, H, W = x_gt.shape
+    timestep = min(timestep, T - 1)
+
+    # Convert physical coordinates to pixel coordinates
+    # Physical domain: x ∈ [-4, 12], y ∈ [-4, 4]
+    XOFFSET, XLENGTH = -4.0, 16.0
+    YOFFSET, YLENGTH = -4.0, 8.0
+
+    dx = XLENGTH / W
+    dy = YLENGTH / H
+    cyl_x_pixel = (0.0 - XOFFSET) / dx  # Cylinder at x=0
+    cyl_y_pixel = (y_physical - YOFFSET) / dy  # y position
+    cyl_r_pixel = r_physical / dy  # Radius in pixels
+
+    # GT + subsample rates + colorbar = 6 columns
+    import matplotlib.gridspec as gridspec
+    n_cols = 1 + len(subsample_rates)
+    fig = plt.figure(figsize=(3.5 * n_cols + 1, 7))
+    gs = gridspec.GridSpec(2, n_cols + 1, width_ratios=[1] * n_cols + [0.05], wspace=0.3)
+    axes = [[fig.add_subplot(gs[row, col]) for col in range(n_cols)] for row in range(2)]
+    cbar_axes = [fig.add_subplot(gs[row, n_cols]) for row in range(2)]
+
+    component_names = ["u (horizontal)", "v (vertical)"]
+
+    # Determine colormap range from GT
+    u_gt = x_gt[timestep, 0].numpy()
+    v_gt = x_gt[timestep, 1].numpy()
+    u_vmin, u_vmax = u_gt.min(), u_gt.max()
+    v_vmin, v_vmax = v_gt.min(), v_gt.max()
+
+    for row, (comp_idx, comp_name) in enumerate(zip([0, 1], component_names)):
+        vmin = u_vmin if comp_idx == 0 else v_vmin
+        vmax = u_vmax if comp_idx == 0 else v_vmax
+
+        # GT column
+        ax = axes[row][0]
+        gt_data = x_gt[timestep, comp_idx].numpy()
+        im = ax.imshow(gt_data, cmap="RdBu_r", vmin=vmin, vmax=vmax, aspect="equal")
+
+        # Add cylinder
+        cylinder = Circle((cyl_x_pixel, cyl_y_pixel), cyl_r_pixel,
+                          fill=False, edgecolor="black", linewidth=1.5, linestyle="--")
+        ax.add_patch(cylinder)
+
+        if row == 0:
+            ax.set_title("Ground Truth", fontsize=11, fontweight="bold")
+        ax.set_ylabel(comp_name, fontsize=11)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        # Each subsample rate
+        for col, sub in enumerate(subsample_rates, start=1):
+            ax = axes[row][col]
+            if sub in reconstructions:
+                recon_data = reconstructions[sub][timestep, comp_idx].numpy()
+                rmse = np.sqrt(np.mean((recon_data - gt_data) ** 2))
+                im = ax.imshow(recon_data, cmap="RdBu_r", vmin=vmin, vmax=vmax, aspect="equal")
+
+                # Add cylinder
+                cylinder = Circle((cyl_x_pixel, cyl_y_pixel), cyl_r_pixel,
+                                  fill=False, edgecolor="black", linewidth=1.5, linestyle="--")
+                ax.add_patch(cylinder)
+
+                if row == 0:
+                    obs_ratio = 100.0 / (sub ** 2)
+                    ax.set_title(f"1/{sub} Subsample\n({obs_ratio:.1f}% obs)\nRMSE={rmse:.3f}",
+                                 fontsize=10)
+            else:
+                ax.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax.transAxes)
+                if row == 0:
+                    ax.set_title(f"1/{sub} Subsample", fontsize=10)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+    # Colorbar in dedicated axes
+    for row in range(2):
+        vmin = u_vmin if row == 0 else v_vmin
+        vmax = u_vmax if row == 0 else v_vmax
+        sm = plt.cm.ScalarMappable(cmap="RdBu_r", norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm.set_array([])
+        cbar = fig.colorbar(sm, cax=cbar_axes[row])
+        cbar.set_label("velocity [m/s]", fontsize=10)
+
+    # Title with geometry info
+    geom_desc = {
+        "baseline": "Baseline (y=0, r=0.5)",
+        "y_m01": "Y-shift -0.1 (y=-0.1, r=0.5)",
+        "y_m02": "Y-shift -0.2 (y=-0.2, r=0.5)",
+        "y_p02": "Y-shift +0.2 (y=+0.2, r=0.5)",
+        "r_04": "Small cylinder (y=0.05, r=0.4)",
+        "r_06": "Large cylinder (y=0.05, r=0.6)",
+    }
+    title = geom_desc.get(geom_name, geom_name)
+    fig.suptitle(f"Sparse Observation Reconstruction: {title}\nTimestep t={timestep}",
+                 fontsize=13, fontweight="bold", y=1.02)
+    plt.tight_layout()
+
+    save_path = output_dir / f"sparse_gen_{geom_name}_comparison.png"
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"    Comparison plot saved: {save_path.name}")
 
 
 def diffusion_trajectory(
@@ -1548,25 +1942,51 @@ def generalization_test(
 
 def main():
     parser = argparse.ArgumentParser(description="IBPM Flow 実験の評価")
-    parser.add_argument("--run-dir", type=Path, required=True, help="学習済みモデルのディレクトリ")
+    parser.add_argument("--run-dir", type=Path, default=None, help="学習済みモデルのディレクトリ（フルパス）")
+    parser.add_argument("--run-id", type=str, default=None, help="Run ID（最新を自動検出する場合は省略）")
     parser.add_argument(
-        "--data-path", type=Path, default=Path("/home/devuser/fluid-sbi/data/ibpm_h5_400x200"), help="IBPMデータのパス"
+        "--data-path", type=Path, default=None, help="IBPMデータのパス（自動検出する場合は省略）"
     )
     parser.add_argument("--output-dir", type=Path, default=None, help="出力ディレクトリ（未指定時はrun-idから自動生成）")
     parser.add_argument(
         "--mode",
         type=str,
         default="all",
-        choices=["all", "data", "sample", "sparse", "debug", "trajectory", "compare", "kolmogorov", "generalization"],
-        help="実行モード",
+        choices=["all", "data", "sample", "sparse", "sparse-gen", "debug", "trajectory", "compare", "kolmogorov", "generalization"],
+        help="実行モード (sparse-gen: 汎化データに対するスパース復元テスト)",
     )
     parser.add_argument(
         "--kolmo-run-dir", type=Path, default=None, help="Kolmogorovモデルのディレクトリ（kolmogorovモードで必要）"
     )
     args = parser.parse_args()
 
+    # Resolve run directory
+    if args.run_dir:
+        # Full path specified
+        run_dir = args.run_dir
+    elif args.run_id:
+        # Run ID specified
+        run_dir = get_runs_dir() / "ibpm" / args.run_id
+    else:
+        # Auto-detect latest run
+        run_dir = find_latest_ibpm_run()
+        print(f"Auto-detected latest run: {run_dir.name}")
+
+    # Resolve data path
+    if args.data_path:
+        data_path = args.data_path
+    else:
+        data_path = get_data_dir("ibpm_h5_400x200")
+        if not data_path.exists():
+            # Fallback to legacy path
+            data_path = Path("/home/devuser/fluid-sbi/data/ibpm_h5_400x200")
+
+    # Update args for compatibility
+    args.run_dir = run_dir
+    args.data_path = data_path
+
     # run_idを抽出（run-dirの名前がrun_id）
-    run_id = args.run_dir.name
+    run_id = run_dir.name
 
     # 出力ディレクトリを決定
     # 指定されていない場合はrun_idに紐付いたディレクトリを使用
@@ -1581,6 +2001,7 @@ def main():
         "data": base_dir / "data",
         "sample": base_dir / "sample",
         "sparse": base_dir / "sparse",
+        "sparse-gen": base_dir / "sparse_gen",
         "trajectory": base_dir / "trajectory",
         "compare": base_dir / "compare",
         "kolmogorov": base_dir / "kolmogorov",
@@ -1616,6 +2037,23 @@ def main():
     if args.mode == "all" or args.mode == "sparse":
         if score is not None and config is not None:
             sparse_reconstruction(score, config, args.data_path, output_dirs["sparse"])
+
+    if args.mode == "sparse-gen":
+        if score is not None and config is not None:
+            results = sparse_generalization_test(
+                score, config, args.data_path, output_dirs["sparse-gen"]
+            )
+            # JSON出力
+            report = {
+                "model": run_id,
+                "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+                "subsample_rates": [2, 4, 8, 16],
+                "results": results,
+            }
+            report_path = output_dirs["sparse-gen"] / "report.json"
+            with open(report_path, "w") as f:
+                json.dump(report, f, indent=2, default=float)
+            print(f"\n  Report saved: {report_path}")
 
     if args.mode == "all" or args.mode == "trajectory":
         if score is not None and config is not None:
