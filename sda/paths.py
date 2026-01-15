@@ -94,7 +94,9 @@ def get_data_dir(experiment: str) -> Path:
     """Get data directory for an experiment.
 
     Note: Data directories may be in different locations depending on the environment.
-    This function provides a default location, but experiments may override it.
+    This function checks multiple locations in order:
+    1. Parent directory (fluid-sbi/data/) - for submodule usage
+    2. Project root (sda/data/) - for standalone usage
 
     Args:
         experiment: Experiment name (e.g., 'ibpm', 'lorenz', 'kolmogorov').
@@ -102,7 +104,15 @@ def get_data_dir(experiment: str) -> Path:
     Returns:
         Path to data/{experiment}/ directory.
     """
-    data_dir = get_project_root() / "data" / experiment
+    project_root = get_project_root()
+
+    # Check parent directory first (fluid-sbi/data/)
+    parent_data = project_root.parent / "data" / experiment
+    if parent_data.exists():
+        return parent_data
+
+    # Fall back to project root (sda/data/)
+    data_dir = project_root / "data" / experiment
     return data_dir
 
 
