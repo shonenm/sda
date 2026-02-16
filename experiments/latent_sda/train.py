@@ -118,8 +118,17 @@ def main():
         action="store_true",
         help="Quick test run with minimal epochs",
     )
+    parser.add_argument(
+        "--score-hidden",
+        type=str,
+        default="256,256,256",
+        help="Score network hidden layers (comma-separated, e.g., '512,512,512')",
+    )
 
     args = parser.parse_args()
+
+    # Parse score_hidden
+    args.score_hidden = tuple(int(x) for x in args.score_hidden.split(","))
 
     # Set seed
     torch.manual_seed(args.seed)
@@ -139,6 +148,8 @@ def main():
 
     print(f"Method: {args.method}")
     print(f"Latent dim: {args.latent_dim}")
+    print(f"Score hidden: {args.score_hidden}")
+    print(f"Epochs: {args.epochs}")
     print(f"Data dir: {data_dir}")
     print(f"Output dir: {output_dir}")
     print(f"Device: {args.device}")
@@ -184,7 +195,7 @@ def main():
     # Create LatentSDA
     latent_sda = LatentSDA(
         encoder=encoder,
-        score_hidden=(256, 256, 256),
+        score_hidden=args.score_hidden,
         score_embedding=64,
         sde_alpha="cos",
         device=args.device,
