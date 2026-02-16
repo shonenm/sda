@@ -496,7 +496,11 @@ def load_ibpm_data(
     split: str = "train",
     normalize: bool = False,
 ) -> Tensor:
-    """IBPMデータをロード
+    """IBPMデータをロード（軸順序を自動検出し、常にNT形式で返す）
+
+    HDF5ファイルの shape_description 属性またはヒューリスティクスで
+    TN形式 (T, N, C, H, W) と NT形式 (N, T, C, H, W) を判別し、
+    常に NT形式 (N, T, C, H, W) に変換して返す。
 
     Args:
         data_path: h5ファイルのあるディレクトリ
@@ -504,11 +508,44 @@ def load_ibpm_data(
         normalize: Trueの場合、正規化して返す
 
     Returns:
-        data: (N, T, 2, H, W) 速度場テンソル
+        data: (N, T, 2, H, W) 速度場テンソル（常にNT形式）
     """
+    import warnings
+
     file_path = Path(data_path) / f"{split}.h5"
     with h5py.File(file_path, "r") as f:
         data = torch.from_numpy(f["x"][:])
+        shape_desc = f["x"].attrs.get("shape_description", "")
+
+    # 軸順序の判定と変換
+    if "n_timesteps, n_samples" in shape_desc:
+        # TN形式 (T, N, C, H, W) → NT形式 (N, T, C, H, W) に転置
+        data = data.permute(1, 0, 2, 3, 4)
+    elif "n_samples, n_timesteps" in shape_desc:
+        pass  # 既にNT形式
+    else:
+        # 属性がない場合: ヒューリスティクスで判定
+        # IBPMDataset が (T, N, ...) として学習 → dim0=T の場合 T < N が多い
+        # (例: T=42, N=19 など)
+        if data.shape[0] < data.shape[1]:
+            warnings.warn(
+                f"shape_description属性なし ({file_path})。"
+                f"shape={tuple(data.shape)}, dim0({data.shape[0]}) < dim1({data.shape[1]}) "
+                f"→ TN形式と推定して転置します。"
+            )
+            data = data.permute(1, 0, 2, 3, 4)
+        elif data.shape[0] > data.shape[1]:
+            warnings.warn(
+                f"shape_description属性なし ({file_path})。"
+                f"shape={tuple(data.shape)}, dim0({data.shape[0]}) > dim1({data.shape[1]}) "
+                f"→ NT形式と推定します。"
+            )
+        else:
+            warnings.warn(
+                f"shape_description属性なし ({file_path})。"
+                f"shape={tuple(data.shape)}, dim0 == dim1 "
+                f"→ 軸順序を判定できません。NT形式と仮定します。"
+            )
 
     if normalize:
         normalizer = IBPMNormalizer()
